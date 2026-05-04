@@ -75,6 +75,8 @@ static char* shell_strtok(char *str, const char *delim) {
 // Shell状态结构
 typedef struct {
     char cwd[256];
+    char username[32];
+    char hostname[32];
     char input_buffer[MAX_INPUT_LENGTH];
     int input_length;
     int cursor_pos;
@@ -130,6 +132,10 @@ static void cmd_cat(int argc, char **argv);
 static void cmd_exec(int argc, char **argv);
 static void cmd_history(int argc, char **argv);
 static void cmd_exit(int argc, char **argv);
+static void cmd_whoami(int argc, char **argv);
+static void cmd_uname(int argc, char **argv);
+static void cmd_date(int argc, char **argv);
+static void cmd_neofetch(int argc, char **argv);
 
 // 辅助函数声明
 static void shell_register_command(const char *name, void (*func)(int, char**), const char *desc);
@@ -144,6 +150,8 @@ void shell_init(void)
 {
     memset(&g_shell, 0, sizeof(g_shell));
     strcpy(g_shell.cwd, "/");
+    strcpy(g_shell.username, "user");
+    strcpy(g_shell.hostname, "mwos");
     g_shell.cursor_pos = 0;
     g_shell.history_index = -1;
     g_shell.initialized = true;
@@ -158,12 +166,16 @@ void shell_init(void)
     shell_register_command("exec", cmd_exec, "执行程序");
     shell_register_command("history", cmd_history, "显示命令历史");
     shell_register_command("exit", cmd_exit, "退出shell");
+    shell_register_command("whoami", cmd_whoami, "显示当前用户");
+    shell_register_command("uname", cmd_uname, "显示系统信息");
+    shell_register_command("date", cmd_date, "显示日期时间");
+    shell_register_command("neofetch", cmd_neofetch, "显示系统信息图形");
     
     kinfo("SHELL", "Modern shell initialized with %d commands", g_shell.command_count);
     
     if (g_shell.term_output) {
-        shell_print("\033[32mMWOS Modern Shell v1.0\033[0m\n");
-        shell_print("Type 'help' for available commands\n");
+        shell_print("\033[1;32mWelcome to MWOS Shell v1.0\033[0m\n");
+        shell_print("Type '\033[1;33mhelp\033[0m' for available commands\n\n");
         shell_print_prompt();
     }
 }
@@ -338,7 +350,21 @@ static void shell_auto_complete(void)
 
 void shell_print_prompt(void)
 {
-    shell_printf("\033[32m%s\033[0m> ", g_shell.cwd);
+    // Ubuntu风格提示符: user@hostname:cwd$ (带颜色)
+    // 普通用户: 绿色用户名@绿色主机名:蓝色路径\$
+    // root用户: 红色用户名@红色主机名:蓝色路径#
+    
+    const char *user_color = "\033[1;32m";  // 亮绿色
+    const char *host_color = "\033[1;32m";  // 亮绿色
+    const char *path_color = "\033[1;34m";  // 亮蓝色
+    const char *reset = "\033[0m";
+    
+    // 显示用户名@主机名:路径$
+    shell_printf("%s%s%s@%s%s%s:%s%s%s%s$ %s",
+                 user_color, g_shell.username, reset,
+                 host_color, g_shell.hostname, reset,
+                 path_color, g_shell.cwd, reset,
+                 reset);
 }
 
 void shell_print(const char *str)
@@ -539,4 +565,84 @@ static void cmd_exit(int argc, char **argv)
 {
     shell_print("Exiting MWOS shell...\n");
     // 这里可以添加退出逻辑
+}
+
+static void cmd_whoami(int argc, char **argv)
+{
+    shell_printf("%s\n", g_shell.username);
+}
+
+static void cmd_uname(int argc, char **argv)
+{
+    bool print_all = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-a") == 0) {
+            print_all = true;
+            break;
+        }
+    }
+    
+    if (print_all || argc == 1) {
+        shell_print("MWOS 1.0.0 mwos-kernel x86_64 MWOS-GNU\n");
+    } else {
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "-s") == 0) {
+                shell_print("MWOS\n");
+            } else if (strcmp(argv[i], "-n") == 0) {
+                shell_print("mwos\n");
+            } else if (strcmp(argv[i], "-r") == 0) {
+                shell_print("1.0.0\n");
+            } else if (strcmp(argv[i], "-v") == 0) {
+                shell_print("MWOS Kernel v1.0\n");
+            } else if (strcmp(argv[i], "-m") == 0) {
+                shell_print("x86_64\n");
+            }
+        }
+    }
+}
+
+static void cmd_date(int argc, char **argv)
+{
+    shell_print("Date/Time information coming soon...\n");
+}
+
+static void cmd_neofetch(int argc, char **argv)
+{
+    // Ubuntu风格配色
+    shell_print("\033[1;32m");
+    shell_print("             .-/+oossssoo+/-.              \n");
+    shell_print("         `:+ssssssssssssssssss+:`          \n");
+    shell_print("       -+ssssssssssssssssssyyssss+-        \n");
+    shell_print("     .ossssssssssssssssss\033[0m\033[1;33mdMMMNy\033[1;32msssso.      \n");
+    shell_print("    /sssssssssss\033[0m\033[1;33mhdmmNNmmyNMMMMh\033[1;32mssssss/     \n");
+    shell_print("   +sssssssss\033[0m\033[1;33mhm\033[1;32myd\033[0m\033[1;33mMMMMMMMNddddy\033[1;32mssssssss+    \n");
+    shell_print("  /ssssssss\033[0m\033[1;33mhNMMM\033[1;32myh\033[0m\033[1;33mhyyyyhmNMMMNh\033[1;32mssssssss/   \n");
+    shell_print(" .ssssssss\033[0m\033[1;33mdMMMNh\033[1;32mssssssssss\033[0m\033[1;33mhNMMMd\033[1;32mssssssss.  \n");
+    shell_print(" +ssss\033[0m\033[1;33mhhhyNMMNy\033[1;32mssssssssssss\033[0m\033[1;33myNMMMy\033[1;32msssssss+ \n");
+    shell_print(" oss\033[0m\033[1;33mhNMMMNyMMMy\033[1;32mssssssssssss\033[0m\033[1;33mhMMMMMm\033[1;32mssssso \n");
+    shell_print("+ssss\033[0m\033[1;33mhhhyNMMMNMMMy\033[1;32mssssssss\033[0m\033[1;33mhMMMMMMMm\033[1;32msssss+\n");
+    shell_print(".ssss\033[0m\033[1;33mhhhyNMMMNMMMNh\033[1;32msssss\033[0m\033[1;33mhMMMMMMMMMm\033[1;32mssss.\n");
+    shell_print(" +ssss\033[0m\033[1;33mhhhyNMMMNMMMNm\033[1;32mssss\033[0m\033[1;33myNMMMMMMMMd\033[1;32mssss+\n");
+    shell_print("  osss\033[0m\033[1;33mhhhyNMMMNMMMNy\033[1;32mss\033[0m\033[1;33mhMMMMMMMMMNh\033[1;32mssso\n");
+    shell_print("   -+sss\033[0m\033[1;33mhhhyNMMNMMMNh\033[1;32m\033[0m\033[1;33mdmNMMMMMMMMd\033[1;32msss-\n");
+    shell_print("     `ossss\033[0m\033[1;33mhhhyNMMMNMMMNm\033[1;32m\033[0m\033[1;33myNMMMMMh\033[1;32mssso`\n");
+    shell_print("       `+osss\033[0m\033[1;33mhhhyNMMMNMMNy\033[1;32m\033[0m\033[1;33mhMMMMh\033[1;32msss+`\n");
+    shell_print("         `-+oss\033[0m\033[1;33mhhhyNMMMNm\033[1;32m\033[0m\033[1;33mdMMMd\033[1;32mss+-`\n");
+    shell_print("             `-/+o\033[0m\033[1;33mssssso\033[1;32m\033[0m\033[1;33mo+/.'\n");
+    shell_print("\033[0m\n");
+    
+    shell_printf("\033[1;32m%s\033[0m@\033[1;32m%s\033[0m\n", g_shell.username, g_shell.hostname);
+    shell_print("------------------\n");
+    shell_printf("\033[1;36mOS\033[0m: MWOS 1.0.0 x86_64\n");
+    shell_printf("\033[1;36mHost\033[0m: MWOS Kernel\n");
+    shell_printf("\033[1;36mKernel\033[0m: 1.0.0\n");
+    shell_printf("\033[1;36mShell\033[0m: mwsh 1.0\n");
+    shell_printf("\033[1;36mWM\033[0m: MWOS WM\n");
+    shell_printf("\033[1;36mTerminal\033[0m: mwos-terminal\n");
+    shell_printf("\033[1;36mCPU\033[0m: x86_64\n");
+    shell_printf("\033[1;36mMemory\033[0m: 1024MB\n");
+    shell_print("\n");
+    
+    // 颜色块
+    shell_print("\033[40m  \033[41m  \033[42m  \033[43m  \033[44m  \033[45m  \033[46m  \033[47m  \033[0m\n");
 }

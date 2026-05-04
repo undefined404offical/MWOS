@@ -113,4 +113,4 @@ make debug
 
 ## License
 
-This project is developed for educational purposes.
+This program is licensed under the GNU General Public License, version 2.

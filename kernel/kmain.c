@@ -239,9 +239,9 @@ static void term_window_draw(wm_window_t* win) {
     if (!win->buffer)
         return;
 
-    // 绘制窗口背景
+    // Ubuntu终端风格背景: 深紫褐色(#300a24)
     for (int i = 0; i < win->buf_width * win->buf_height; i++) {
-        win->buffer[i] = 0xFF202020; // 浅灰色背景
+        win->buffer[i] = 0xFF300A24;
     }
 
     // 如果没有字体，使用简单的矩形显示文字位置
@@ -522,11 +522,9 @@ kmain(void* params) {
         g_term_colors[i] = 0xFFFFFF;
     }
 
-    term_append_line("MWOS Terminal - Welcome!", 0xFFFFFF);
-    term_append_line("Type 'help' for available commands", 0x00FF00);
-    term_append_line(g_font ? "Font status: Loaded"
-                            : "Font status: Not available",
-                     0xFFFF00);
+    // Ubuntu终端风格欢迎信息
+    term_append_line("Welcome to MWOS Terminal", 0x00FF00);
+    term_append_line("Type 'help' for available commands", 0xAAAAAA);
     term_append_line("", 0xFFFFFF);
 
     serial_puts("TERM: Font status: ");
