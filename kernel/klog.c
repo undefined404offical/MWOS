@@ -55,10 +55,10 @@ void klog(klog_level_t level, const char *fmt, ...)
              klog_prefix[level],
              msg);
 
-    // 主要输出到终端窗口
-    if (g_klog_term_output && g_terminal_initialized) {
-        g_klog_term_output(final);
-    }
+    // 不再输出到终端窗口，只通过串口输出调试信息
+    // if (g_klog_term_output && g_terminal_initialized) {
+    //     g_klog_term_output(final);
+    // }
     
     // 减少串口输出，只在调试模式下输出
     #ifdef DEBUG_SERIAL

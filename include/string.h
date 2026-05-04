@@ -31,6 +31,6 @@ long atol(const char* str);
 long long atoll(const char* str);
 int vsnprintf(char* str, size_t size, const char* format, va_list args);
 int snprintf(char* str, size_t size, const char* format, ...);
-
+const char* strstr(const char* haystack, const char* needle);
 
 #endif
