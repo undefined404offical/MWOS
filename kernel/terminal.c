@@ -201,6 +201,12 @@ static void term_draw(wm_window_t* win) {
                                win->buf_height, t->lines[i]);
         y += TERM_LINE_HEIGHT;
     }
+
+    if (t->line_buffer_len > 0 && y < content_h) {
+        ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, y, TERM_FONT_SIZE,
+                               t->line_buffer_color, win->buffer, win->buf_width,
+                               win->buf_height, t->line_buffer);
+    }
 }
 
 static void term_mouse_handler(wm_window_t* win, int lx, int ly, int button) {
@@ -219,6 +225,8 @@ void terminal_init(void) {
     t->cursor_col = 0;
     t->initialized = false;
     t->window = NULL;
+    t->line_buffer_len = 0;
+    t->line_buffer_color = 0xFFFFFF;
 
     for (int i = 0; i < TERM_MAX_LINES; i++) {
         t->colors[i] = 0xFFFFFF;
@@ -263,8 +271,6 @@ void terminal_output(const char* str) {
     terminal_t* t = &g_terminal;
 
     const char* p = str;
-    char line_buf[TERM_MAX_LINE_LEN];
-    int line_len = 0;
     uint32_t current_color = 0xFFFFFF;
 
     while (*p) {
@@ -274,28 +280,26 @@ void terminal_output(const char* str) {
         }
 
         if (*p == '\n' || *p == '\r') {
-            line_buf[line_len] = '\0';
-            term_append_line(line_buf, current_color);
-            line_len = 0;
+            t->line_buffer[t->line_buffer_len] = '\0';
+            term_append_line(t->line_buffer, t->line_buffer_color);
+            t->line_buffer_len = 0;
             p++;
         } else if (*p == '\b') {
-            if (line_len > 0) {
-                line_len--;
-                line_buf[line_len] = '\0';
+            if (t->line_buffer_len > 0) {
+                t->line_buffer_len--;
+                t->line_buffer[t->line_buffer_len] = '\0';
             } else {
                 term_backspace();
             }
             p++;
         } else {
-            if (line_len < TERM_MAX_LINE_LEN - 1)
-                line_buf[line_len++] = *p;
+            if (t->line_buffer_len < TERM_MAX_LINE_LEN - 1) {
+                t->line_buffer[t->line_buffer_len++] = *p;
+                t->line_buffer[t->line_buffer_len] = '\0';
+            }
+            t->line_buffer_color = current_color;
             p++;
         }
-    }
-
-    if (line_len > 0) {
-        line_buf[line_len] = '\0';
-        term_append_line(line_buf, current_color);
     }
 
     if (t->window && t->initialized) {
@@ -310,6 +314,7 @@ void terminal_clear(void) {
     terminal_t* t = &g_terminal;
     t->line_count = 0;
     t->scroll_offset = 0;
+    t->line_buffer_len = 0;
 
     if (t->window) {
         term_draw(t->window);

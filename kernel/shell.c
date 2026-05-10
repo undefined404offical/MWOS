@@ -2,6 +2,7 @@
 #include "klog.h"
 #include "memory.h"
 #include "string.h"
+#include "terminal.h"
 
 static shell_state_t g_shell;
 
@@ -187,7 +188,6 @@ static const char* shell_get_next_completion(void) {
     return match;
 }
 
-static void builtin_help(int argc, char** argv);
 static void builtin_echo(int argc, char** argv);
 static void builtin_clear(int argc, char** argv);
 static void builtin_ls(int argc, char** argv);
@@ -212,7 +212,6 @@ void shell_init(void) {
     history_init(&g_shell.history);
     completion_init(&g_shell.completion);
 
-    shell_register_command("help", "Show available commands", builtin_help);
     shell_register_command("echo", "Print text to terminal", builtin_echo);
     shell_register_command("clear", "Clear terminal screen", builtin_clear);
     shell_register_command("ls", "List directory contents", builtin_ls);
@@ -351,15 +350,14 @@ void shell_execute(const char* line) {
     }
 
     shell_printf("Command not found: %s\n", cmd_name);
-    shell_print("Type 'help' for available commands.\n");
 }
 
 static void refresh_input_line(void) {
     if (!g_shell.output)
         return;
 
-    shell_print("\033[2K\n");
-    shell_print_prompt();
+    shell_print("\r\033[K");
+    shell_printf("%s@%s:%s$ ", g_shell.username, g_shell.hostname, g_shell.cwd);
     shell_print(g_shell.input.buffer);
 
     if (g_shell.input.cursor < g_shell.input.length) {
@@ -486,6 +484,7 @@ void shell_process_char(char c) {
 
         shell_printf("%s@%s:%s$ ", g_shell.username, g_shell.hostname,
                      g_shell.cwd);
+        terminal_refresh();
         return;
     }
 
@@ -520,23 +519,6 @@ void shell_process_key(uint8_t scancode, uint8_t ch) {
     if (ch) {
         shell_process_char(ch);
     }
-}
-
-static void builtin_help(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
-
-    shell_print("\033[1mMWOS Shell - Available Commands:\033[0m\n");
-    shell_print("========================================\n");
-
-    for (int i = 0; i < g_shell.command_count; i++) {
-        shell_print_prompt();
-    }
-
-    shell_print("\n");
-    shell_print("Use Tab for auto-completion\n");
-    shell_print("Use Up/Down arrows for history navigation\n");
-    shell_print("\n");
 }
 
 static void builtin_echo(int argc, char** argv) {
