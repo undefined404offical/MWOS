@@ -205,7 +205,7 @@ void shell_init(void) {
     memset(&g_shell, 0, sizeof(g_shell));
 
     strcpy(g_shell.cwd, "/");
-    strcpy(g_shell.username, "user");
+    strcpy(g_shell.username, "root");
     strcpy(g_shell.hostname, "mwos");
 
     input_init(&g_shell.input);

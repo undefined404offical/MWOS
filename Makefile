@@ -69,7 +69,7 @@ OTHER_OBJECTS = $(filter-out $(ENTRY_OBJECT), $(KERNEL_OBJECTS))
 KERNEL_INCLUDE_DIRS = $(addprefix -I, $(KERNEL_SUBDIRS))
 
 KERNEL_CFLAGS = -target x86_64-linux-gnu -ffreestanding -fno-builtin \
-                -fno-stack-protector -mno-red-zone -Wall -Wextra -O2 $(INCLUDE) \
+                -fno-stack-protector -mno-red-zone -Wall -Wextra -O2 -g $(INCLUDE) \
                 -mgeneral-regs-only -mno-sse -mno-mmx -Iinclude/ -I./include/freestnd-c-hdrs/ \
                 $(KERNEL_INCLUDE_DIRS) -Wno-unused-variable -Wno-unused-parameter \
                 -Wno-unused-but-set-variable -Wno-unused-function -Wno-comment \
@@ -116,6 +116,14 @@ $(KERNELBUILDDIR)/kernel.elf: $(KERNEL_OBJECTS) $(KERNELDIR)/kernel.ld
 	$(Q)mkdir -p $(KERNELBUILDDIR)
 	$(Q)$(LD_MSG)
 	$(Q)ld.lld -nostdlib -T $(KERNELDIR)/kernel.ld -o $@ $(ENTRY_OBJECT) $(OTHER_OBJECTS)
+
+# ttf.o 需要使用浮点运算（stb_truetype），去掉 -mgeneral-regs-only -mno-sse -mno-mmx
+TTF_CFLAGS = $(filter-out -mgeneral-regs-only -mno-sse -mno-mmx, $(KERNEL_CFLAGS))
+
+$(KERNELBUILDDIR)/ttf.o: $(KERNELDIR)/ttf.c
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC_MSG)
+	$(Q)$(CC) $(TTF_CFLAGS) -c $< -o $@
 
 $(KERNELBUILDDIR)/%.o: $(KERNELDIR)/%.c
 	$(Q)mkdir -p $(dir $@)

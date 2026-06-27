@@ -55,7 +55,6 @@
 #include "terminal.h"
 #include "thread.h"
 #include "ttf.h"
-#include "ttf_cache.h"
 #include "ui/microui.h"
 #include "vmm.h"
 #include "wm.h"
@@ -237,11 +236,6 @@ kmain(void* params) {
     boot_splash_set_progress(65);
     boot_splash_present();
 
-    ttf_cache_init();
-    if (g_font) {
-        ttf_cache_preload_ascii(g_font, 16, 0xFFFFFF);
-    }
-
     kinfo("INPUT", "Initializing PS/2 keyboard");
     keyboard_init();
     boot_splash_log("Keyboard initialized", 0x88FF88);
@@ -323,7 +317,6 @@ kmain(void* params) {
 
     for (;;) {
         wm_redraw_dirty();
-        graphics_present();
         mouse_save_bg(mouse_x, mouse_y);
         mouse_draw(mouse_x, mouse_y);
         asm volatile("hlt");
@@ -393,8 +386,7 @@ void on_mouse_update(int32_t x_rel, int32_t y_rel, uint8_t left_button,
             xor_rect_fb(preview_last_x, preview_last_y, pw, ph, xor_color);
             preview_last_valid = 0;
         }
-
-        wm_redraw();
+        wm_redraw_dirty();
     }
 
     mouse_save_bg(mouse_x, mouse_y);

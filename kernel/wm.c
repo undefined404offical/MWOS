@@ -47,53 +47,178 @@ typedef struct
 static taskbar_button_t g_taskbar[32];
 static int g_taskbar_count = 0;
 
-// dirty rect
-typedef struct
-{
-    int x1, y1;
-    int x2, y2; // [x1,x2), [y1,y2)
-    bool valid;
-} wm_dirty_t;
+// dirty rect queue
+#define WM_DIRTY_QUEUE_CAPACITY 8
 
-static wm_dirty_t g_dirty = {0, 0, 0, 0, false};
+typedef struct {
+    int x1, y1;
+    int x2, y2;
+} wm_rect_t;
+
+typedef struct {
+    wm_rect_t rects[WM_DIRTY_QUEUE_CAPACITY];
+    uint8_t count;
+    bool pending;
+} wm_dirty_queue_t;
+
+static wm_dirty_queue_t g_dirty_queue = {{0}, 0, false};
+
+// incremental rendering: coverage array
+// uses bitmask array, 1 bit per pixel. 1 = already covered by opaque window
+#define COVERAGE_WORDS_PER_ROW(w) (((w) + 63) / 64)
+static uint64_t *g_coverage = NULL;
+static int g_coverage_w = 0;
+static int g_coverage_h = 0;
+static int g_coverage_pitch_words = 0;
+
+// incremental rendering control
+static bool g_incremental_render_enabled = false;
+
+static void coverage_init(int w, int h) {
+    if (w == g_coverage_w && h == g_coverage_h && g_coverage)
+        return;
+    if (g_coverage) {
+        kfree(g_coverage);
+        g_coverage = NULL;
+    }
+    g_coverage_w = w;
+    g_coverage_h = h;
+    g_coverage_pitch_words = COVERAGE_WORDS_PER_ROW(w);
+    uint64_t total = (uint64_t)g_coverage_pitch_words * h;
+    g_coverage = (uint64_t *)kmalloc(total * sizeof(uint64_t));
+}
+
+static void coverage_clear_rect(int x1, int y1, int x2, int y2) {
+    if (!g_coverage || x1 >= x2 || y1 >= y2) return;
+    for (int y = y1; y < y2; y++) {
+        uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+        int start_word = x1 >> 6;
+        int end_word = (x2 - 1) >> 6;
+        uint64_t start_mask = ~0ULL << (x1 & 63);
+        uint64_t end_mask = ~0ULL >> (63 - ((x2 - 1) & 63));
+        if (start_word == end_word) {
+            uint64_t mask = start_mask & end_mask;
+            row[start_word] &= ~mask;
+        } else {
+            row[start_word] &= ~start_mask;
+            for (int w = start_word + 1; w < end_word; w++)
+                row[w] = 0;
+            row[end_word] &= ~end_mask;
+        }
+    }
+}
+
+static bool coverage_is_pixel_covered(int x, int y) {
+    if (!g_coverage || x < 0 || y < 0 || x >= g_coverage_w || y >= g_coverage_h) return false;
+    uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+    int word_idx = x >> 6;
+    int bit_idx = x & 63;
+    return (row[word_idx] >> bit_idx) & 1ULL;
+}
+
+static void coverage_set_rect(int x1, int y1, int x2, int y2) {
+    if (!g_coverage || x1 >= x2 || y1 >= y2) return;
+    for (int y = y1; y < y2; y++) {
+        uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+        int start_word = x1 >> 6;
+        int end_word = (x2 - 1) >> 6;
+        uint64_t start_mask = ~0ULL << (x1 & 63);
+        uint64_t end_mask = ~0ULL >> (63 - ((x2 - 1) & 63));
+        if (start_word == end_word) {
+            uint64_t mask = start_mask & end_mask;
+            row[start_word] |= mask;
+        } else {
+            row[start_word] |= start_mask;
+            for (int w = start_word + 1; w < end_word; w++)
+                row[w] = ~0ULL;
+            row[end_word] |= end_mask;
+        }
+    }
+}
+
+static inline int wm_rect_min_int(int a, int b) { return a < b ? a : b; }
+static inline int wm_rect_max_int(int a, int b) { return a > b ? a : b; }
+
+static inline bool wm_rects_intersect_or_touch(const wm_rect_t *a, const wm_rect_t *b) {
+    return a->x1 <= b->x2 && b->x1 <= a->x2 && a->y1 <= b->y2 && b->y1 <= a->y2;
+}
+
+static inline void wm_rect_union_into(wm_rect_t *dst, const wm_rect_t *src) {
+    dst->x1 = wm_rect_min_int(dst->x1, src->x1);
+    dst->y1 = wm_rect_min_int(dst->y1, src->y1);
+    dst->x2 = wm_rect_max_int(dst->x2, src->x2);
+    dst->y2 = wm_rect_max_int(dst->y2, src->y2);
+}
+
+static inline uint64_t wm_rect_area(const wm_rect_t *rect) {
+    return (uint64_t)(rect->x2 - rect->x1) * (uint64_t)(rect->y2 - rect->y1);
+}
+
+static void wm_dirty_queue_compact(void) {
+    for (uint8_t i = 0; i < g_dirty_queue.count; ) {
+        for (uint8_t j = i + 1; j < g_dirty_queue.count; ) {
+            if (!wm_rects_intersect_or_touch(&g_dirty_queue.rects[i], &g_dirty_queue.rects[j])) {
+                ++j;
+                continue;
+            }
+            wm_rect_union_into(&g_dirty_queue.rects[i], &g_dirty_queue.rects[j]);
+            g_dirty_queue.rects[j] = g_dirty_queue.rects[g_dirty_queue.count - 1];
+            g_dirty_queue.count--;
+        }
+        ++i;
+    }
+    g_dirty_queue.pending = g_dirty_queue.count != 0;
+}
 
 // ------------------------------------------------
 // dirty rect 管理
 // ------------------------------------------------
 
-static void wm_dirty_reset(void)
-{
-    g_dirty.valid = false;
+static void wm_dirty_reset(void) {
+    g_dirty_queue.count = 0;
+    g_dirty_queue.pending = false;
 }
 
-void wm_invalidate_rect(int x, int y, int w, int h)
-{
+void wm_invalidate_rect(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+
     int x2 = x + w;
     int y2 = y + h;
 
-    if (!g_dirty.valid)
-    {
-        g_dirty.x1 = x;
-        g_dirty.y1 = y;
-        g_dirty.x2 = x2;
-        g_dirty.y2 = y2;
-        g_dirty.valid = true;
+    wm_rect_t rect = {x, y, x2, y2};
+
+    for (uint8_t i = 0; i < g_dirty_queue.count; ) {
+        if (!wm_rects_intersect_or_touch(&g_dirty_queue.rects[i], &rect)) {
+            ++i;
+            continue;
+        }
+        wm_rect_union_into(&rect, &g_dirty_queue.rects[i]);
+        g_dirty_queue.rects[i] = g_dirty_queue.rects[g_dirty_queue.count - 1];
+        g_dirty_queue.count--;
     }
-    else
-    {
-        if (x < g_dirty.x1)
-            g_dirty.x1 = x;
-        if (y < g_dirty.y1)
-            g_dirty.y1 = y;
-        if (x2 > g_dirty.x2)
-            g_dirty.x2 = x2;
-        if (y2 > g_dirty.y2)
-            g_dirty.y2 = y2;
+
+    if (g_dirty_queue.count < WM_DIRTY_QUEUE_CAPACITY) {
+        g_dirty_queue.rects[g_dirty_queue.count++] = rect;
+        g_dirty_queue.pending = true;
+        return;
     }
+
+    uint8_t best_index = 0;
+    uint64_t best_growth = (uint64_t)-1;
+    for (uint8_t i = 0; i < g_dirty_queue.count; ++i) {
+        wm_rect_t merged = g_dirty_queue.rects[i];
+        wm_rect_union_into(&merged, &rect);
+        uint64_t growth = wm_rect_area(&merged) - wm_rect_area(&g_dirty_queue.rects[i]);
+        if (growth < best_growth) {
+            best_growth = growth;
+            best_index = i;
+        }
+    }
+    wm_rect_union_into(&g_dirty_queue.rects[best_index], &rect);
+    wm_dirty_queue_compact();
 }
 
-void wm_invalidate_window(wm_window_t *win)
-{
+void wm_invalidate_window(wm_window_t *win) {
     if (!win)
         return;
     int x = win->x;
@@ -868,13 +993,191 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
     }
 }
 
+// 支持增量混合的窗口绘制：跳过已被覆盖的像素
+static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
+                                        wm_window_t *win,
+                                        int clip_x1, int clip_y1,
+                                        int clip_x2, int clip_y2,
+                                        bool (*is_covered)(int, int))
+{
+    if (!buf || !g_framebuffer || !win)
+        return;
+
+    int sw = g_framebuffer->framebuffer_width;
+    int sh = g_framebuffer->framebuffer_height;
+
+    int tx = win->x;
+    int ty = win->y;
+    int w = win->width;
+    int h = win->height;
+    int th = win->title_height;
+
+    int wx1 = tx;
+    int wy1 = ty;
+    int wx2 = tx + w;
+    int wy2 = ty + th + h;
+
+    if (wx1 >= sw || wy1 >= sh || wx2 <= 0 || wy2 <= 0)
+        return;
+
+    int rx1 = (wx1 > clip_x1) ? wx1 : clip_x1;
+    int ry1 = (wy1 > clip_y1) ? wy1 : clip_y1;
+    int rx2 = (wx2 < clip_x2) ? wx2 : clip_x2;
+    int ry2 = (wy2 < clip_y2) ? wy2 : clip_y2;
+    if (rx1 >= rx2 || ry1 >= ry2)
+        return;
+
+    bool all_covered = true;
+    for (int y = ty; y < ty + th; y++) {
+        if (y < ry1 || y >= ry2) continue;
+        if (y < 0 || y >= sh) continue;
+        for (int x = tx; x < tx + w; x++) {
+            if (x < rx1 || x >= rx2) continue;
+            if (x < 0 || x >= sw) continue;
+            if (!is_covered(x, y)) { all_covered = false; break; }
+        }
+        if (!all_covered) break;
+    }
+
+    if (!all_covered) {
+        for (int y = ty; y < ty + th; y++) {
+            if (y < ry1 || y >= ry2) continue;
+            if (y < 0 || y >= sh) continue;
+            for (int x = tx; x < tx + w; x++) {
+                if (x < rx1 || x >= rx2) continue;
+                if (x < 0 || x >= sw) continue;
+                if (is_covered(x, y)) continue;
+                buf[y * pitch + x] = 0xFF224488;
+            }
+        }
+
+        if (g_font) {
+            int text_x = win->x + 8;
+            int text_y = win->y + 20;
+            if (text_x < clip_x2 && text_x >= clip_x1 &&
+                text_y < clip_y2 && text_y >= clip_y1) {
+                ttf_draw_text_utf8(g_font, text_x, text_y, 20, 0xFFFFFFFF, win->title);
+            }
+        }
+
+        for (int yy = 0; yy < win->btn_min_h; yy++) {
+            for (int xx = 0; xx < win->btn_min_w; xx++) {
+                int sx = win->x + win->btn_min_x + xx;
+                int sy = win->y + win->btn_min_y + yy;
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                    buf[sy * pitch + sx] = 0xFF666666;
+            }
+        }
+        for (int xx = 4; xx < 16; xx++) {
+            int sx = win->x + win->btn_min_x + xx;
+            int sy = win->y + win->btn_min_y + 14;
+            if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
+            if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                buf[sy * pitch + sx] = 0xFFFFFFFF;
+        }
+
+        for (int yy = 0; yy < win->btn_max_h; yy++) {
+            for (int xx = 0; xx < win->btn_max_w; xx++) {
+                int sx = win->x + win->btn_max_x + xx;
+                int sy = win->y + win->btn_max_y + yy;
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                    buf[sy * pitch + sx] = 0xFF666666;
+            }
+        }
+        for (int xx = 4; xx < 16; xx++) {
+            int sx1 = win->x + win->btn_max_x + xx;
+            int sy1 = win->y + win->btn_max_y + 4;
+            int sy2 = win->y + win->btn_max_y + 16;
+            if (sx1 < rx1 || sx1 >= rx2) continue;
+            if (sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh && sy1 >= ry1 && sy1 < ry2 && !is_covered(sx1, sy1))
+                buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
+            if (sx1 >= 0 && sx1 < sw && sy2 >= 0 && sy2 < sh && sy2 >= ry1 && sy2 < ry2 && !is_covered(sx1, sy2))
+                buf[sy2 * pitch + sx1] = 0xFFFFFFFF;
+        }
+        for (int yy = 4; yy < 16; yy++) {
+            int sy = win->y + win->btn_max_y + yy;
+            int sx1 = win->x + win->btn_max_x + 4;
+            int sx2 = win->x + win->btn_max_x + 16;
+            if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh) continue;
+            if (sx1 >= rx1 && sx1 < rx2 && sx1 >= 0 && sx1 < sw && !is_covered(sx1, sy))
+                buf[sy * pitch + sx1] = 0xFFFFFFFF;
+            if (sx2 >= rx1 && sx2 < rx2 && sx2 >= 0 && sx2 < sw && !is_covered(sx2, sy))
+                buf[sy * pitch + sx2] = 0xFFFFFFFF;
+        }
+
+        for (int yy = 0; yy < win->btn_close_h; yy++) {
+            for (int xx = 0; xx < win->btn_close_w; xx++) {
+                int sx = win->x + win->btn_close_x + xx;
+                int sy = win->y + win->btn_close_y + yy;
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                    buf[sy * pitch + sx] = 0xFFAA3333;
+            }
+        }
+        for (int i = 4; i < 16; i++) {
+            int sx1 = win->x + win->btn_close_x + i;
+            int sy1 = win->y + win->btn_close_y + i;
+            int sx2 = win->x + win->btn_close_x + (16 - (i - 4));
+            int sy2 = win->y + win->btn_close_y + i;
+            if (sx1 >= rx1 && sx1 < rx2 && sy1 >= ry1 && sy1 < ry2 &&
+                sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh && !is_covered(sx1, sy1))
+                buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
+            if (sx2 >= rx1 && sx2 < rx2 && sy2 >= ry1 && sy2 < ry2 &&
+                sx2 >= 0 && sx2 < sw && sy2 >= 0 && sy2 < sh && !is_covered(sx2, sy2))
+                buf[sy2 * pitch + sx2] = 0xFFFFFFFF;
+        }
+    }
+
+    int bx0 = tx;
+    int bx1 = tx + w - 1;
+    int by0 = ty;
+    int by1 = ty + th + h - 1;
+
+    if (by0 >= ry1 && by0 < ry2 && by0 >= 0 && by0 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
+            if (x < rx1 || x >= rx2) continue;
+            if (x >= 0 && x < sw && !is_covered(x, by0))
+                buf[by0 * pitch + x] = 0xFF000000;
+        }
+    }
+    if (by1 >= ry1 && by1 < ry2 && by1 >= 0 && by1 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
+            if (x < rx1 || x >= rx2) continue;
+            if (x >= 0 && x < sw && !is_covered(x, by1))
+                buf[by1 * pitch + x] = 0xFF000000;
+        }
+    }
+    for (int y = by0; y <= by1; y++) {
+        if (y < ry1 || y >= ry2 || y < 0 || y >= sh) continue;
+        if (bx0 >= rx1 && bx0 < rx2 && bx0 >= 0 && bx0 < sw && !is_covered(bx0, y))
+            buf[y * pitch + bx0] = 0xFF000000;
+        if (bx1 >= rx1 && bx1 < rx2 && bx1 >= 0 && bx1 < sw && !is_covered(bx1, y))
+            buf[y * pitch + bx1] = 0xFF000000;
+    }
+
+    int bw = win->buf_width;
+    int bh = win->buf_height;
+    for (int yy = 0; yy < bh; yy++) {
+        int sy = ty + th + yy;
+        if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh) continue;
+        for (int xx = 0; xx < bw; xx++) {
+            int sx = tx + xx;
+            if (sx < rx1 || sx >= rx2 || sx < 0 || sx >= sw) continue;
+            if (is_covered(sx, sy)) continue;
+            buf[sy * pitch + sx] = win->buffer[yy * bw + xx];
+        }
+    }
+}
+
 // ------------------------------------------------
-// 重绘：dirty rect 版本
+// 重绘：dirty rect 版本（支持增量混合）
 // ------------------------------------------------
 
 void wm_redraw_dirty(void)
 {
-    if (!g_framebuffer || !g_backbuffer || !g_dirty.valid)
+    if (!g_framebuffer || !g_backbuffer || !g_dirty_queue.pending)
         return;
 
     uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
@@ -885,115 +1188,132 @@ void wm_redraw_dirty(void)
     uint32_t *bb = g_backbuffer;
     uint32_t bb_p = g_backbuffer_pitch;
 
-    int x1 = g_dirty.x1;
-    int y1 = g_dirty.y1;
-    int x2 = g_dirty.x2;
-    int y2 = g_dirty.y2;
+    coverage_init(sw, sh);
 
-    if (x1 < 0)
-        x1 = 0;
-    if (y1 < 0)
-        y1 = 0;
-    if (x2 > sw)
-        x2 = sw;
-    if (y2 > sh)
-        y2 = sh;
+    while (g_dirty_queue.pending && g_dirty_queue.count > 0) {
+        wm_rect_t rect = g_dirty_queue.rects[g_dirty_queue.count - 1];
+        g_dirty_queue.count--;
 
-    if (x1 >= x2 || y1 >= y2)
-    {
-        wm_dirty_reset();
-        return;
-    }
+        int x1 = rect.x1;
+        int y1 = rect.y1;
+        int x2 = rect.x2;
+        int y2 = rect.y2;
 
-    // 1) 先把 dirty 区域的 backbuffer 清为桌面色
-    for (int y = y1; y < y2; y++)
-    {
-        if (y < 0 || y >= sh)
+        if (x1 < 0) x1 = 0;
+        if (y1 < 0) y1 = 0;
+        if (x2 > sw) x2 = sw;
+        if (y2 > sh) y2 = sh;
+
+        if (x1 >= x2 || y1 >= y2)
             continue;
-        uint32_t *row = &bb[y * bb_p];
-        for (int x = x1; x < x2; x++)
-        {
-            if (x < 0 || x >= sw)
-                continue;
-            row[x] = 0xFF169DE2;
-        }
-    }
 
-    // 2) 从底到顶，重画和 dirty 相交的窗口
-    for (wm_window_t *win = g_window_list; win; win = win->next)
-    {
-        if (!win->visible || win->minimized)
-            continue;
-        wm_draw_window_clipped_to(bb, bb_p, win, x1, y1, x2, y2);
-    }
-
-    // 3) 画任务栏（即使部分在 dirty 区域，也按裁剪画）
-    for (int x = x1; x < x2; x++)
-    {
-        for (int y = g_screen_h - 28; y < g_screen_h; y++)
+        for (int y = y1; y < y2; y++)
         {
-            if (y < y1 || y >= y2)
+            if (y < 0 || y >= sh)
                 continue;
-            if (x < 0 || x >= sw || y < 0 || y >= sh)
-                continue;
-            bb[y * bb_p + x] = 0xFF303030;
-        }
-    }
-
-    for (int i = 0; i < g_taskbar_count; i++)
-    {
-        taskbar_button_t *b = &g_taskbar[i];
-        for (int yy = 0; yy < b->h; yy++)
-        {
-            int sy = b->y + yy;
-            if (sy < y1 || sy >= y2)
-                continue;
-            if (sy < 0 || sy >= sh)
-                continue;
-            for (int xx = 0; xx < b->w; xx++)
+            uint32_t *row = &bb[y * bb_p];
+            for (int x = x1; x < x2; x++)
             {
-                int sx = b->x + xx;
-                if (sx < x1 || sx >= x2)
+                if (x < 0 || x >= sw)
                     continue;
-                if (sx < 0 || sx >= sw)
-                    continue;
-                bb[sy * bb_p + sx] = 0xFF505050;
+                row[x] = 0xFF169DE2;
             }
         }
-        if (g_font)
+
+        coverage_clear_rect(x1, y1, x2, y2);
+
+        wm_window_t *windows[128];
+        int win_count = 0;
+        for (wm_window_t *w = g_window_list; w && win_count < 128; w = w->next) {
+            windows[win_count++] = w;
+        }
+
+        for (int i = win_count - 1; i >= 0; i--) {
+            wm_window_t *win = windows[i];
+            if (!win->visible || win->minimized)
+                continue;
+
+            int wx1 = win->x;
+            int wy1 = win->y;
+            int wx2 = win->x + win->width;
+            int wy2 = win->y + win->title_height + win->height;
+
+            if (wx1 >= x2 || wy1 >= y2 || wx2 <= x1 || wy2 <= y1)
+                continue;
+
+            if (g_incremental_render_enabled) {
+                wm_draw_window_with_coverage(bb, bb_p, win, x1, y1, x2, y2, coverage_is_pixel_covered);
+                coverage_set_rect(wx1, wy1, wx2, wy2);
+            } else {
+                wm_draw_window_clipped_to(bb, bb_p, win, x1, y1, x2, y2);
+            }
+        }
+
+        for (int x = x1; x < x2; x++)
         {
-            int tx = b->x + 6;
-            int ty = b->y + 19;
-            if (tx < x2 && tx >= x1 && ty < y2 && ty >= y1)
+            for (int y = g_screen_h - 28; y < g_screen_h; y++)
             {
-                ttf_draw_text_utf8(
-                    g_font,
-                    tx,
-                    ty,
-                    18,
-                    0xFFFFFFFF,
-                    b->win->title);
+                if (y < y1 || y >= y2)
+                    continue;
+                if (x < 0 || x >= sw || y < 0 || y >= sh)
+                    continue;
+                bb[y * bb_p + x] = 0xFF303030;
+            }
+        }
+
+        for (int i = 0; i < g_taskbar_count; i++)
+        {
+            taskbar_button_t *b = &g_taskbar[i];
+            for (int yy = 0; yy < b->h; yy++)
+            {
+                int sy = b->y + yy;
+                if (sy < y1 || sy >= y2)
+                    continue;
+                if (sy < 0 || sy >= sh)
+                    continue;
+                for (int xx = 0; xx < b->w; xx++)
+                {
+                    int sx = b->x + xx;
+                    if (sx < x1 || sx >= x2)
+                        continue;
+                    if (sx < 0 || sx >= sw)
+                        continue;
+                    bb[sy * bb_p + sx] = 0xFF505050;
+                }
+            }
+            if (g_font)
+            {
+                int tx = b->x + 6;
+                int ty = b->y + 19;
+                if (tx < x2 && tx >= x1 && ty < y2 && ty >= y1)
+                {
+                    ttf_draw_text_utf8(
+                        g_font,
+                        tx,
+                        ty,
+                        18,
+                        0xFFFFFFFF,
+                        b->win->title);
+                }
+            }
+        }
+
+        for (int y = y1; y < y2; y++)
+        {
+            if (y < 0 || y >= sh)
+                continue;
+            uint32_t *src = &bb[y * bb_p];
+            uint32_t *dst = &fb[y * fb_p];
+            for (int x = x1; x < x2; x++)
+            {
+                if (x < 0 || x >= sw)
+                    continue;
+                dst[x] = src[x];
             }
         }
     }
 
-    // 4) 把 dirty 区域从 backbuffer 拷到 framebuffer
-    for (int y = y1; y < y2; y++)
-    {
-        if (y < 0 || y >= sh)
-            continue;
-        uint32_t *src = &bb[y * bb_p];
-        uint32_t *dst = &fb[y * fb_p];
-        for (int x = x1; x < x2; x++)
-        {
-            if (x < 0 || x >= sw)
-                continue;
-            dst[x] = src[x];
-        }
-    }
-    // mouse_draw(mouse_x, mouse_y);
-
-    wm_dirty_reset();
+    g_dirty_queue.pending = false;
 }
 
 // 兼容旧接口：全屏重绘 → 实际用 dirty rect 完成
