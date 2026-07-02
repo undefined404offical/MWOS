@@ -1,6 +1,7 @@
 #include "terminal.h"
 #include "graphics.h"
 #include "klog.h"
+#include "serial.h"
 #include "string.h"
 #include "ttf.h"
 #include "wm.h"
@@ -194,18 +195,42 @@ static void term_draw(wm_window_t* win) {
 
     int y = TERM_MARGIN_Y;
 
+    serial_puts("[TERM_DBG] term_draw: line_count=");
+    serial_putdec32(t->line_count);
+    serial_puts(" scroll_offset=");
+    serial_putdec32(t->scroll_offset);
+    serial_puts(" start=");
+    serial_putdec32(start);
+    serial_puts(" max_visible=");
+    serial_putdec32(max_visible);
+    serial_puts(" buf_height=");
+    serial_putdec32(win->buf_height);
+    serial_puts("\n");
+
     for (int i = start;
          i < start + max_visible && i < t->line_count && y < content_h; i++) {
         ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, y, TERM_FONT_SIZE,
                                t->colors[i], win->buffer, win->buf_width,
                                win->buf_height, t->lines[i]);
+        serial_puts("[TERM_DBG] hist line y=");
+        serial_putdec32(y);
+        serial_puts(" text='");
+        serial_puts(t->lines[i]);
+        serial_puts("'\n");
         y += TERM_LINE_HEIGHT;
     }
 
     if (t->line_buffer_len > 0 && y < content_h) {
+        serial_puts("[TERM_DBG] line_buffer y=");
+        serial_putdec32(y);
+        serial_puts(" len=");
+        serial_putdec32(t->line_buffer_len);
+        serial_puts(" text='");
+        serial_puts(t->line_buffer);
+        serial_puts("'\n");
         ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, y, TERM_FONT_SIZE,
-                               t->line_buffer_color, win->buffer, win->buf_width,
-                               win->buf_height, t->line_buffer);
+                               t->line_buffer_color, win->buffer,
+                               win->buf_width, win->buf_height, t->line_buffer);
     }
 }
 
@@ -272,6 +297,7 @@ void terminal_output(const char* str) {
 
     const char* p = str;
     uint32_t current_color = 0xFFFFFF;
+    bool had_full_event = false; // true = 需要全重绘，false = 仅输入行增量
 
     while (*p) {
         if (*p == '\033' && *(p + 1) == '[') {
@@ -283,13 +309,26 @@ void terminal_output(const char* str) {
             t->line_buffer[t->line_buffer_len] = '\0';
             term_append_line(t->line_buffer, t->line_buffer_color);
             t->line_buffer_len = 0;
+            had_full_event = true;
             p++;
         } else if (*p == '\b') {
             if (t->line_buffer_len > 0) {
+                serial_puts("[TERM_DBG] backspace on line_buffer, old_len=");
+                serial_putdec32(t->line_buffer_len);
+                serial_puts(" old_text='");
+                serial_puts(t->line_buffer);
+                serial_puts("'\n");
                 t->line_buffer_len--;
                 t->line_buffer[t->line_buffer_len] = '\0';
+                serial_puts("[TERM_DBG] backspace result: new_len=");
+                serial_putdec32(t->line_buffer_len);
+                serial_puts(" new_text='");
+                serial_puts(t->line_buffer);
+                serial_puts("'\n");
             } else {
+                serial_puts("[TERM_DBG] backspace on history lines\n");
                 term_backspace();
+                had_full_event = true;
             }
             p++;
         } else {
@@ -303,10 +342,150 @@ void terminal_output(const char* str) {
     }
 
     if (t->window && t->initialized) {
-        term_draw(t->window);
+        if (had_full_event) {
+            term_draw(t->window);
+        } else {
+            // 增量更新：只重绘输入行区域，不清除窗口其余部分
+            wm_window_t* win = t->window;
+            int content_h = win->height;
+            int max_visible = (content_h / TERM_LINE_HEIGHT) - 6;
+            if (max_visible < 1)
+                max_visible = 1;
+
+            // 输入行位于所有可见历史行之后
+            int visible_history = t->line_count;
+            if (visible_history > max_visible)
+                visible_history = max_visible;
+            int input_y = TERM_MARGIN_Y + visible_history * TERM_LINE_HEIGHT;
+
+            serial_puts("[COORD] incremental: line_count=");
+            serial_putdec32(t->line_count);
+            serial_puts(" max_visible=");
+            serial_putdec32(max_visible);
+            serial_puts(" visible_history=");
+            serial_putdec32(visible_history);
+            serial_puts(" input_y=");
+            serial_putdec32(input_y);
+            serial_puts(" TERM_MARGIN_X=");
+            serial_putdec32(TERM_MARGIN_X);
+            serial_puts(" TERM_MARGIN_Y=");
+            serial_putdec32(TERM_MARGIN_Y);
+            serial_puts(" buf_w=");
+            serial_putdec32(win->buf_width);
+            serial_puts(" buf_h=");
+            serial_putdec32(win->buf_height);
+            serial_puts("\n");
+            serial_puts("[COORD] incremental text: len=");
+            serial_putdec32(t->line_buffer_len);
+            serial_puts(" text='");
+            serial_puts(t->line_buffer);
+            serial_puts("'\n");
+            serial_puts("[COORD] incremental draw at: x=");
+            serial_putdec32(TERM_MARGIN_X);
+            serial_puts(" y=");
+            serial_putdec32(input_y);
+            serial_puts(" font_size=");
+            serial_putdec32(TERM_FONT_SIZE);
+            serial_puts("\n");
+
+            int clear_top = input_y - 16;
+            if (clear_top < 0)
+                clear_top = 0;
+            int clear_bottom = input_y + TERM_LINE_HEIGHT;
+            if (clear_bottom > win->buf_height)
+                clear_bottom = win->buf_height;
+
+            if (clear_top < win->buf_height &&
+                input_y + TERM_LINE_HEIGHT <= win->buf_height) {
+                // 清除输入行区域（包括上方字形 ascent 部分）
+                serial_puts("[COORD] clear region: y=");
+                serial_putdec32(clear_top);
+                serial_puts(" to y=");
+                serial_putdec32(clear_bottom - 1);
+                serial_puts(" x=0 to x=");
+                serial_putdec32(win->buf_width - 1);
+                serial_puts(" old_input_y=");
+                serial_putdec32(input_y);
+                serial_puts("\n");
+                for (int py = clear_top; py < clear_bottom; py++) {
+                    uint32_t* row = &win->buffer[py * win->buf_width];
+                    for (int px = 0; px < win->buf_width; px++)
+                        row[px] = 0xFF300A24;
+                }
+                // 绘制输入缓冲区文本
+                if (t->line_buffer_len > 0) {
+                    serial_puts("[COORD] calling ttf_draw_text_utf8_buf(x=");
+                    serial_putdec32(TERM_MARGIN_X);
+                    serial_puts(", y=");
+                    serial_putdec32(input_y);
+                    serial_puts(")\n");
+                    ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, input_y,
+                                           TERM_FONT_SIZE, t->line_buffer_color,
+                                           win->buffer, win->buf_width,
+                                           win->buf_height, t->line_buffer);
+                    serial_puts("[COORD] ttf_draw done\n");
+                } else {
+                    serial_puts("[COORD] line_buffer empty, no ttf draw\n");
+                }
+
+                // 绘制长方形光标——在当前输入位置
+                {
+                    int cursor_x = TERM_MARGIN_X;
+                    if (t->line_buffer_len > 0)
+                        cursor_x += ttf_text_width(g_font, TERM_FONT_SIZE,
+                                                   t->line_buffer);
+
+                    // 计算字体升部/降部（像素）
+                    int asc_px = (int)((int64_t)g_font->ascender *
+                                       TERM_FONT_SIZE / g_font->unitsPerEm);
+                    int dsc_px = (int)((int64_t)(-g_font->descender) *
+                                       TERM_FONT_SIZE / g_font->unitsPerEm);
+                    int cursor_top = input_y - asc_px;
+                    int cursor_h = asc_px + dsc_px;
+                    // 光标宽度：2 像素竖条
+                    int cursor_w = 3;
+
+                    // 裁剪边界
+                    if (cursor_top < 0) {
+                        cursor_h += cursor_top;
+                        cursor_top = 0;
+                    }
+                    if (cursor_top + cursor_h > win->buf_height)
+                        cursor_h = win->buf_height - cursor_top;
+                    if (cursor_h < 1)
+                        cursor_h = 1;
+
+                    serial_puts("[CURSOR] x=");
+                    serial_putdec32(cursor_x);
+                    serial_puts(" top=");
+                    serial_putdec32(cursor_top);
+                    serial_puts(" w=");
+                    serial_putdec32(cursor_w);
+                    serial_puts(" h=");
+                    serial_putdec32(cursor_h);
+                    serial_puts("\n");
+
+                    uint32_t cursor_color = 0xFFFFFFFF; // 白色
+                    for (int cy = cursor_top; cy < cursor_top + cursor_h;
+                         cy++) {
+                        uint32_t* row = &win->buffer[cy * win->buf_width];
+                        for (int cx = cursor_x;
+                             cx < cursor_x + cursor_w && cx < win->buf_width;
+                             cx++) {
+                            row[cx] = cursor_color;
+                        }
+                    }
+                }
+            } else {
+                serial_puts("[COORD] input_y out of bounds! input_y=");
+                serial_putdec32(input_y);
+                serial_puts(" buf_h=");
+                serial_putdec32(win->buf_height);
+                serial_puts("\n");
+            }
+        }
         wm_invalidate_window(t->window);
         wm_redraw_dirty();
-        graphics_present();
     }
 }
 
@@ -320,7 +499,6 @@ void terminal_clear(void) {
         term_draw(t->window);
         wm_invalidate_window(t->window);
         wm_redraw_dirty();
-        graphics_present();
     }
 }
 
@@ -331,7 +509,6 @@ void terminal_refresh(void) {
         term_draw(t->window);
         wm_invalidate_window(t->window);
         wm_redraw_dirty();
-        graphics_present();
     }
 }
 

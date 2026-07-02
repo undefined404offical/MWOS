@@ -74,6 +74,9 @@ void ttf_draw_text_utf8_buf(const TTF_Font* font,
                         int buf_w, int buf_h,
                         const char* utf8);
 
+// 计算 UTF‑8 文本在不同像素大小下的宽度（像素），不执行渲染
+int ttf_text_width(const TTF_Font* font, int pixel_size, const char* utf8);
+
 // ========================
 // Glyph Cache（按 glyph_index + pixel_size）
 // ========================

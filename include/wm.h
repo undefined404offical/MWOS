@@ -1,15 +1,16 @@
 #ifndef WM_H
 #define WM_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "graphics.h"
 #include "kernelcb.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 typedef struct window wm_window_t;
 
 typedef void (*wm_draw_callback_t)(wm_window_t* win);
-typedef void (*wm_event_callback_t)(wm_window_t* win, int lx, int ly, int button);
+typedef void (*wm_event_callback_t)(wm_window_t* win, int lx, int ly,
+                                    int button);
 
 struct window {
     int x, y;
@@ -24,8 +25,8 @@ struct window {
     int btn_close_x, btn_close_y;
     int btn_close_w, btn_close_h;
 
-    int btn_min_x,  btn_min_y,  btn_min_w,  btn_min_h;
-    int btn_max_x,  btn_max_y,  btn_max_w,  btn_max_h;
+    int btn_min_x, btn_min_y, btn_min_w, btn_min_h;
+    int btn_max_x, btn_max_y, btn_max_w, btn_max_h;
 
     bool visible;
     bool minimized;
@@ -37,9 +38,12 @@ struct window {
     int restore_x, restore_y;
     int restore_w, restore_h;
 
+    int layer;
+    bool layer_locked;
+
     uint32_t* buffer;
 
-    wm_draw_callback_t  draw;
+    wm_draw_callback_t draw;
     wm_event_callback_t on_mouse;
 
     struct window* parent;
@@ -63,16 +67,19 @@ extern bool preview_active;
 extern wm_window_t* g_dragging_window;
 
 extern uint32_t* g_backbuffer;
-extern uint32_t  g_backbuffer_pitch;
+extern uint32_t g_backbuffer_pitch;
 
 void wm_init(int screen_w, int screen_h);
 
-wm_window_t* wm_create_window(int x, int y, int w, int h,
-                              const char* title,
+wm_window_t* wm_create_window(int x, int y, int w, int h, const char* title,
                               wm_draw_callback_t draw_func,
                               wm_event_callback_t event_func);
 
 void wm_close_window(wm_window_t* win);
+
+void wm_set_window_layer(wm_window_t* win, int layer);
+void wm_lock_window_layer(wm_window_t* win, bool lock);
+void wm_bring_to_front(wm_window_t* win);
 
 bool wm_handle_mouse(int x, int y, bool left_down);
 

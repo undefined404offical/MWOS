@@ -1,12 +1,12 @@
 #include "wm.h"
 #include "graphics.h"
-#include "ttf.h"
 #include "memory.h"
-#include "string.h"
 #include "serial.h"
+#include "string.h"
+#include "ttf.h"
 
-extern boot_params_t *g_framebuffer;
-extern TTF_Font *g_font;
+extern boot_params_t* g_framebuffer;
+extern TTF_Font* g_font;
 extern int32_t mouse_x;
 extern int32_t mouse_y;
 
@@ -17,15 +17,15 @@ extern const char mouse_cursor[CURSOR_H][CURSOR_W];
 static int g_screen_w = 0;
 static int g_screen_h = 0;
 
-wm_window_t *g_dragging_window = NULL;
-static wm_window_t *g_window_list = NULL; // 底→顶
+wm_window_t* g_dragging_window = NULL;
+static wm_window_t* g_window_list = NULL; // 底→顶
 static int g_next_window_id = 1;
 
 static uint32_t g_mouse_bg[CURSOR_H][CURSOR_W];
 int32_t g_old_mouse_x = -1;
 int32_t g_old_mouse_y = -1;
 
-extern uint32_t *g_backbuffer;
+extern uint32_t* g_backbuffer;
 extern uint32_t g_backbuffer_pitch;
 
 int preview_x = -1;
@@ -38,9 +38,8 @@ static int g_xor_last_w = 0;
 static int g_xor_last_h = 0;
 
 // 任务栏按钮
-typedef struct
-{
-    wm_window_t *win;
+typedef struct {
+    wm_window_t* win;
     int x, y, w, h;
 } taskbar_button_t;
 
@@ -66,7 +65,7 @@ static wm_dirty_queue_t g_dirty_queue = {{0}, 0, false};
 // incremental rendering: coverage array
 // uses bitmask array, 1 bit per pixel. 1 = already covered by opaque window
 #define COVERAGE_WORDS_PER_ROW(w) (((w) + 63) / 64)
-static uint64_t *g_coverage = NULL;
+static uint64_t* g_coverage = NULL;
 static int g_coverage_w = 0;
 static int g_coverage_h = 0;
 static int g_coverage_pitch_words = 0;
@@ -85,13 +84,14 @@ static void coverage_init(int w, int h) {
     g_coverage_h = h;
     g_coverage_pitch_words = COVERAGE_WORDS_PER_ROW(w);
     uint64_t total = (uint64_t)g_coverage_pitch_words * h;
-    g_coverage = (uint64_t *)kmalloc(total * sizeof(uint64_t));
+    g_coverage = (uint64_t*)kmalloc(total * sizeof(uint64_t));
 }
 
 static void coverage_clear_rect(int x1, int y1, int x2, int y2) {
-    if (!g_coverage || x1 >= x2 || y1 >= y2) return;
+    if (!g_coverage || x1 >= x2 || y1 >= y2)
+        return;
     for (int y = y1; y < y2; y++) {
-        uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+        uint64_t* row = &g_coverage[y * g_coverage_pitch_words];
         int start_word = x1 >> 6;
         int end_word = (x2 - 1) >> 6;
         uint64_t start_mask = ~0ULL << (x1 & 63);
@@ -109,17 +109,19 @@ static void coverage_clear_rect(int x1, int y1, int x2, int y2) {
 }
 
 static bool coverage_is_pixel_covered(int x, int y) {
-    if (!g_coverage || x < 0 || y < 0 || x >= g_coverage_w || y >= g_coverage_h) return false;
-    uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+    if (!g_coverage || x < 0 || y < 0 || x >= g_coverage_w || y >= g_coverage_h)
+        return false;
+    uint64_t* row = &g_coverage[y * g_coverage_pitch_words];
     int word_idx = x >> 6;
     int bit_idx = x & 63;
     return (row[word_idx] >> bit_idx) & 1ULL;
 }
 
 static void coverage_set_rect(int x1, int y1, int x2, int y2) {
-    if (!g_coverage || x1 >= x2 || y1 >= y2) return;
+    if (!g_coverage || x1 >= x2 || y1 >= y2)
+        return;
     for (int y = y1; y < y2; y++) {
-        uint64_t *row = &g_coverage[y * g_coverage_pitch_words];
+        uint64_t* row = &g_coverage[y * g_coverage_pitch_words];
         int start_word = x1 >> 6;
         int end_word = (x2 - 1) >> 6;
         uint64_t start_mask = ~0ULL << (x1 & 63);
@@ -139,30 +141,34 @@ static void coverage_set_rect(int x1, int y1, int x2, int y2) {
 static inline int wm_rect_min_int(int a, int b) { return a < b ? a : b; }
 static inline int wm_rect_max_int(int a, int b) { return a > b ? a : b; }
 
-static inline bool wm_rects_intersect_or_touch(const wm_rect_t *a, const wm_rect_t *b) {
+static inline bool wm_rects_intersect_or_touch(const wm_rect_t* a,
+                                               const wm_rect_t* b) {
     return a->x1 <= b->x2 && b->x1 <= a->x2 && a->y1 <= b->y2 && b->y1 <= a->y2;
 }
 
-static inline void wm_rect_union_into(wm_rect_t *dst, const wm_rect_t *src) {
+static inline void wm_rect_union_into(wm_rect_t* dst, const wm_rect_t* src) {
     dst->x1 = wm_rect_min_int(dst->x1, src->x1);
     dst->y1 = wm_rect_min_int(dst->y1, src->y1);
     dst->x2 = wm_rect_max_int(dst->x2, src->x2);
     dst->y2 = wm_rect_max_int(dst->y2, src->y2);
 }
 
-static inline uint64_t wm_rect_area(const wm_rect_t *rect) {
+static inline uint64_t wm_rect_area(const wm_rect_t* rect) {
     return (uint64_t)(rect->x2 - rect->x1) * (uint64_t)(rect->y2 - rect->y1);
 }
 
 static void wm_dirty_queue_compact(void) {
-    for (uint8_t i = 0; i < g_dirty_queue.count; ) {
-        for (uint8_t j = i + 1; j < g_dirty_queue.count; ) {
-            if (!wm_rects_intersect_or_touch(&g_dirty_queue.rects[i], &g_dirty_queue.rects[j])) {
+    for (uint8_t i = 0; i < g_dirty_queue.count;) {
+        for (uint8_t j = i + 1; j < g_dirty_queue.count;) {
+            if (!wm_rects_intersect_or_touch(&g_dirty_queue.rects[i],
+                                             &g_dirty_queue.rects[j])) {
                 ++j;
                 continue;
             }
-            wm_rect_union_into(&g_dirty_queue.rects[i], &g_dirty_queue.rects[j]);
-            g_dirty_queue.rects[j] = g_dirty_queue.rects[g_dirty_queue.count - 1];
+            wm_rect_union_into(&g_dirty_queue.rects[i],
+                               &g_dirty_queue.rects[j]);
+            g_dirty_queue.rects[j] =
+                g_dirty_queue.rects[g_dirty_queue.count - 1];
             g_dirty_queue.count--;
         }
         ++i;
@@ -180,14 +186,15 @@ static void wm_dirty_reset(void) {
 }
 
 void wm_invalidate_rect(int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0)
+        return;
 
     int x2 = x + w;
     int y2 = y + h;
 
     wm_rect_t rect = {x, y, x2, y2};
 
-    for (uint8_t i = 0; i < g_dirty_queue.count; ) {
+    for (uint8_t i = 0; i < g_dirty_queue.count;) {
         if (!wm_rects_intersect_or_touch(&g_dirty_queue.rects[i], &rect)) {
             ++i;
             continue;
@@ -208,7 +215,8 @@ void wm_invalidate_rect(int x, int y, int w, int h) {
     for (uint8_t i = 0; i < g_dirty_queue.count; ++i) {
         wm_rect_t merged = g_dirty_queue.rects[i];
         wm_rect_union_into(&merged, &rect);
-        uint64_t growth = wm_rect_area(&merged) - wm_rect_area(&g_dirty_queue.rects[i]);
+        uint64_t growth =
+            wm_rect_area(&merged) - wm_rect_area(&g_dirty_queue.rects[i]);
         if (growth < best_growth) {
             best_growth = growth;
             best_index = i;
@@ -218,7 +226,7 @@ void wm_invalidate_rect(int x, int y, int w, int h) {
     wm_dirty_queue_compact();
 }
 
-void wm_invalidate_window(wm_window_t *win) {
+void wm_invalidate_window(wm_window_t* win) {
     if (!win)
         return;
     int x = win->x;
@@ -232,13 +240,10 @@ void wm_invalidate_window(wm_window_t *win) {
 // 辅助：任务栏按钮
 // ------------------------------------------------
 
-static void taskbar_add_button(wm_window_t *win)
-{
+static void taskbar_add_button(wm_window_t* win) {
     // 已存在则不重复添加
-    for (int i = 0; i < g_taskbar_count; i++)
-    {
-        if (g_taskbar[i].win == win)
-        {
+    for (int i = 0; i < g_taskbar_count; i++) {
+        if (g_taskbar[i].win == win) {
             return;
         }
     }
@@ -246,7 +251,7 @@ static void taskbar_add_button(wm_window_t *win)
         return;
 
     int index = g_taskbar_count++;
-    taskbar_button_t *b = &g_taskbar[index];
+    taskbar_button_t* b = &g_taskbar[index];
     b->win = win;
     b->w = 120;
     b->h = 24;
@@ -254,10 +259,8 @@ static void taskbar_add_button(wm_window_t *win)
     b->y = g_screen_h - 26;
 }
 
-static void taskbar_update_positions(void)
-{
-    for (int i = 0; i < g_taskbar_count; i++)
-    {
+static void taskbar_update_positions(void) {
+    for (int i = 0; i < g_taskbar_count; i++) {
         g_taskbar[i].x = 4 + i * 124;
         g_taskbar[i].y = g_screen_h - 26;
     }
@@ -267,8 +270,7 @@ static void taskbar_update_positions(void)
 // 标题栏按钮布局
 // ------------------------------------------------
 
-static void wm_update_titlebar_buttons(wm_window_t *win)
-{
+static void wm_update_titlebar_buttons(wm_window_t* win) {
     win->btn_min_w = 20;
     win->btn_min_h = 20;
     win->btn_min_x = win->width - 72;
@@ -289,8 +291,7 @@ static void wm_update_titlebar_buttons(wm_window_t *win)
 // 初始化
 // ------------------------------------------------
 
-void wm_init(int screen_w, int screen_h)
-{
+void wm_init(int screen_w, int screen_h) {
     g_screen_w = screen_w;
     g_screen_h = screen_h;
     g_window_list = NULL;
@@ -300,30 +301,27 @@ void wm_init(int screen_w, int screen_h)
     wm_dirty_reset();
 
     serial_puts("WM: init OK\n");
-    bool *klog_to_screen = false;
+    bool* klog_to_screen = false;
 }
 
 // ------------------------------------------------
 // 鼠标背景保存/恢复/绘制（直接在 framebuffer 上操作）
 // ------------------------------------------------
 
-void mouse_save_bg(int mx, int my)
-{
+void mouse_save_bg(int mx, int my) {
     if (!g_framebuffer)
         return;
 
-    uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
+    uint32_t* fb = (uint32_t*)g_framebuffer->framebuffer_addr;
     uint32_t pitch = g_framebuffer->framebuffer_pitch >> 2;
     int sw = g_framebuffer->framebuffer_width;
     int sh = g_framebuffer->framebuffer_height;
 
-    for (int y = 0; y < CURSOR_H; y++)
-    {
+    for (int y = 0; y < CURSOR_H; y++) {
         int sy = my + y;
         if (sy < 0 || sy >= sh)
             continue;
-        for (int x = 0; x < CURSOR_W; x++)
-        {
+        for (int x = 0; x < CURSOR_W; x++) {
             int sx = mx + x;
             if (sx < 0 || sx >= sw)
                 continue;
@@ -332,23 +330,20 @@ void mouse_save_bg(int mx, int my)
     }
 }
 
-void mouse_restore_bg(int mx, int my)
-{
+void mouse_restore_bg(int mx, int my) {
     if (!g_framebuffer)
         return;
- 
-    uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
+
+    uint32_t* fb = (uint32_t*)g_framebuffer->framebuffer_addr;
     uint32_t pitch = g_framebuffer->framebuffer_pitch >> 2;
     int sw = g_framebuffer->framebuffer_width;
     int sh = g_framebuffer->framebuffer_height;
 
-    for (int y = 0; y < CURSOR_H; y++)
-    {
+    for (int y = 0; y < CURSOR_H; y++) {
         int sy = my + y;
         if (sy < 0 || sy >= sh)
             continue;
-        for (int x = 0; x < CURSOR_W; x++)
-        {
+        for (int x = 0; x < CURSOR_W; x++) {
             int sx = mx + x;
             if (sx < 0 || sx >= sw)
                 continue;
@@ -357,23 +352,20 @@ void mouse_restore_bg(int mx, int my)
     }
 }
 
-void mouse_draw(int mx, int my)
-{
+void mouse_draw(int mx, int my) {
     if (!g_framebuffer)
         return;
 
-    uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
+    uint32_t* fb = (uint32_t*)g_framebuffer->framebuffer_addr;
     uint32_t pitch = g_framebuffer->framebuffer_pitch >> 2;
     int sw = g_framebuffer->framebuffer_width;
     int sh = g_framebuffer->framebuffer_height;
 
-    for (int y = 0; y < CURSOR_H; y++)
-    {
+    for (int y = 0; y < CURSOR_H; y++) {
         int sy = my + y;
         if (sy < 0 || sy >= sh)
             continue;
-        for (int x = 0; x < CURSOR_W; x++)
-        {
+        for (int x = 0; x < CURSOR_W; x++) {
             int sx = mx + x;
             if (sx < 0 || sx >= sw)
                 continue;
@@ -391,12 +383,10 @@ void mouse_draw(int mx, int my)
 // 窗口创建、关闭、缓冲区调整
 // ------------------------------------------------
 
-wm_window_t *wm_create_window(int x, int y, int w, int h,
-                              const char *title,
+wm_window_t* wm_create_window(int x, int y, int w, int h, const char* title,
                               wm_draw_callback_t draw_func,
-                              wm_event_callback_t event_func)
-{
-    wm_window_t *win = (wm_window_t *)kmalloc(sizeof(wm_window_t));
+                              wm_event_callback_t event_func) {
+    wm_window_t* win = (wm_window_t*)kmalloc(sizeof(wm_window_t));
     if (!win)
         return NULL;
 
@@ -409,15 +399,13 @@ wm_window_t *wm_create_window(int x, int y, int w, int h,
     win->height = h;
     win->title_height = 28;
 
-    if (title)
-    {
+    if (title) {
         strncpy(win->title, title, sizeof(win->title) - 1);
         win->title[sizeof(win->title) - 1] = '\0';
     }
 
-    win->buffer = (uint32_t *)kmalloc(sizeof(uint32_t) * w * h);
-    if (!win->buffer)
-    {
+    win->buffer = (uint32_t*)kmalloc(sizeof(uint32_t) * w * h);
+    if (!win->buffer) {
         kfree(win);
         return NULL;
     }
@@ -435,31 +423,36 @@ wm_window_t *wm_create_window(int x, int y, int w, int h,
     win->draw = draw_func;
     win->on_mouse = event_func;
 
+    win->layer = 1;
+    win->layer_locked = false;
+
     wm_update_titlebar_buttons(win);
 
-    // 插入窗口链表（尾部）
-    if (!g_window_list)
+    // 插入窗口链表：按 layer 排序（尾部为最高层同层组的最后一个）
     {
-        g_window_list = win;
-    }
-    else
-    {
-        wm_window_t *cur = g_window_list;
-        while (cur->next)
-            cur = cur->next;
-        cur->next = win;
+        wm_window_t* insert_after = NULL;
+        for (wm_window_t* w = g_window_list; w; w = w->next) {
+            if (w->layer > win->layer)
+                break;
+            insert_after = w;
+        }
+        if (!insert_after) {
+            win->next = g_window_list;
+            g_window_list = win;
+        } else {
+            win->next = insert_after->next;
+            insert_after->next = win;
+        }
     }
 
     taskbar_add_button(win);
 
-    if (win->draw)
-    {
+    if (win->draw) {
         win->draw(win);
     }
 
     serial_puts("WM: before first draw\n");
-    if (win->draw)
-    {
+    if (win->draw) {
         serial_puts("WM: draw ptr = ");
         serial_putptr(win->draw);
         serial_puts("\n");
@@ -473,14 +466,12 @@ wm_window_t *wm_create_window(int x, int y, int w, int h,
     return win;
 }
 
-void wm_resize_window_buffer(wm_window_t *win, int new_w, int new_h)
-{
+void wm_resize_window_buffer(wm_window_t* win, int new_w, int new_h) {
     int old_w = win->buf_width;
     int old_h = win->buf_height;
 
-    uint32_t *newbuf = kmalloc(new_w * new_h * 4);
-    if (!newbuf)
-    {
+    uint32_t* newbuf = kmalloc(new_w * new_h * 4);
+    if (!newbuf) {
         serial_puts("wm: resize failed, out of memory\n");
         return;
     }
@@ -490,8 +481,7 @@ void wm_resize_window_buffer(wm_window_t *win, int new_w, int new_h)
     int copy_w = (new_w < old_w) ? new_w : old_w;
     int copy_h = (new_h < old_h) ? new_h : old_h;
 
-    for (int y = 0; y < copy_h; y++)
-    {
+    for (int y = 0; y < copy_h; y++) {
         memcpy(&newbuf[y * new_w], &win->buffer[y * old_w], copy_w * 4);
     }
 
@@ -501,19 +491,15 @@ void wm_resize_window_buffer(wm_window_t *win, int new_w, int new_h)
     win->buf_height = new_h;
 }
 
-void wm_close_window(wm_window_t *win)
-{
+void wm_close_window(wm_window_t* win) {
     if (!win)
         return;
 
     // 从窗口链表删除
-    if (g_window_list == win)
-    {
+    if (g_window_list == win) {
         g_window_list = win->next;
-    }
-    else
-    {
-        wm_window_t *cur = g_window_list;
+    } else {
+        wm_window_t* cur = g_window_list;
         while (cur && cur->next != win)
             cur = cur->next;
         if (cur)
@@ -521,15 +507,13 @@ void wm_close_window(wm_window_t *win)
     }
 
     // 从任务栏删除
-    for (int i = 0; i < g_taskbar_count; i++)
-    {
-        if (g_taskbar[i].win == win)
-        {
+    for (int i = 0; i < g_taskbar_count; i++) {
+        if (g_taskbar[i].win == win) {
             // 标记任务栏按钮区域为无效
-            wm_invalidate_rect(g_taskbar[i].x, g_taskbar[i].y, g_taskbar[i].w, g_taskbar[i].h);
-            
-            for (int j = i; j < g_taskbar_count - 1; j++)
-            {
+            wm_invalidate_rect(g_taskbar[i].x, g_taskbar[i].y, g_taskbar[i].w,
+                               g_taskbar[i].h);
+
+            for (int j = i; j < g_taskbar_count - 1; j++) {
                 g_taskbar[j] = g_taskbar[j + 1];
             }
             g_taskbar_count--;
@@ -551,24 +535,79 @@ void wm_close_window(wm_window_t *win)
 }
 
 // ------------------------------------------------
+// 图层系统：将窗口重新插入到正确图层位置
+// ------------------------------------------------
+
+static void wm_reinsert_in_layer_order(wm_window_t* win) {
+    if (!win)
+        return;
+
+    // 从链表中移除
+    if (g_window_list == win) {
+        g_window_list = win->next;
+    } else {
+        wm_window_t* prev = g_window_list;
+        while (prev && prev->next != win)
+            prev = prev->next;
+        if (prev)
+            prev->next = win->next;
+    }
+
+    // 找到插入点：最后一个 layer <= win->layer 的窗口之后
+    wm_window_t* insert_after = NULL;
+    for (wm_window_t* w = g_window_list; w; w = w->next) {
+        if (w->layer > win->layer)
+            break;
+        insert_after = w;
+    }
+
+    if (!insert_after) {
+        win->next = g_window_list;
+        g_window_list = win;
+    } else {
+        win->next = insert_after->next;
+        insert_after->next = win;
+    }
+}
+
+void wm_set_window_layer(wm_window_t* win, int layer) {
+    if (!win || win->layer_locked)
+        return;
+    win->layer = layer;
+    wm_reinsert_in_layer_order(win);
+    wm_invalidate_window(win);
+    wm_redraw_dirty();
+}
+
+void wm_lock_window_layer(wm_window_t* win, bool lock) {
+    if (!win)
+        return;
+    win->layer_locked = lock;
+}
+
+void wm_bring_to_front(wm_window_t* win) {
+    if (!win)
+        return;
+    // 在同层组内移到最前（即链表尾部方向）
+    wm_reinsert_in_layer_order(win);
+}
+
+// ------------------------------------------------
 // 命中检测：从顶到底找窗口
 // ------------------------------------------------
 
-wm_window_t *wm_pick_window_at(int x, int y)
-{
+wm_window_t* wm_pick_window_at(int x, int y) {
     if (!g_window_list)
         return NULL;
 
-    wm_window_t *stack[128];
+    wm_window_t* stack[128];
     int count = 0;
-    for (wm_window_t *w = g_window_list; w && count < 128; w = w->next)
-    {
+    for (wm_window_t* w = g_window_list; w && count < 128; w = w->next) {
         stack[count++] = w;
     }
 
-    for (int i = count - 1; i >= 0; i--)
-    {
-        wm_window_t *w = stack[i];
+    for (int i = count - 1; i >= 0; i--) {
+        wm_window_t* w = stack[i];
         int tx = w->x;
         int ty = w->y;
         int th = w->title_height;
@@ -577,9 +616,7 @@ wm_window_t *wm_pick_window_at(int x, int y)
         if (!w->visible || w->minimized)
             continue;
 
-        if (x >= tx && x < tx + w->width &&
-            y >= ty && y < ty + total_h)
-        {
+        if (x >= tx && x < tx + w->width && y >= ty && y < ty + total_h) {
             return w;
         }
     }
@@ -591,8 +628,8 @@ wm_window_t *wm_pick_window_at(int x, int y)
 // 绘制：单个窗口到 backbuffer（不裁剪）
 // ------------------------------------------------
 
-static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t *win)
-{
+static void wm_draw_single_window_to(uint32_t* buf, uint32_t pitch,
+                                     wm_window_t* win) {
     if (!buf || !g_framebuffer || !win)
         return;
 
@@ -606,13 +643,11 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     int th = win->title_height;
 
     // 标题栏背景
-    for (int yy = 0; yy < th; yy++)
-    {
+    for (int yy = 0; yy < th; yy++) {
         int sy = ty + yy;
         if (sy < 0 || sy >= sh)
             continue;
-        for (int xx = 0; xx < w; xx++)
-        {
+        for (int xx = 0; xx < w; xx++) {
             int sx = tx + xx;
             if (sx < 0 || sx >= sw)
                 continue;
@@ -621,30 +656,21 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     }
 
     // 标题文字
-    if (g_font)
-    {
-        ttf_draw_text_utf8(
-            g_font,
-            win->x + 8,
-            win->y + 20,
-            20,
-            0xFFFFFFFF,
-            win->title);
+    if (g_font) {
+        ttf_draw_text_utf8(g_font, win->x + 8, win->y + 20, 20, 0xFFFFFFFF,
+                           win->title);
     }
 
     // 最小化按钮
-    for (int yy = 0; yy < win->btn_min_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_min_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_min_h; yy++) {
+        for (int xx = 0; xx < win->btn_min_w; xx++) {
             int sx = win->x + win->btn_min_x + xx;
             int sy = win->y + win->btn_min_y + yy;
             if (sx >= 0 && sx < sw && sy >= 0 && sy < sh)
                 buf[sy * pitch + sx] = 0xFF666666;
         }
     }
-    for (int xx = 4; xx < 16; xx++)
-    {
+    for (int xx = 4; xx < 16; xx++) {
         int sx = win->x + win->btn_min_x + xx;
         int sy = win->y + win->btn_min_y + 14;
         if (sx >= 0 && sx < sw && sy >= 0 && sy < sh)
@@ -652,38 +678,32 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     }
 
     // 最大化按钮
-    for (int yy = 0; yy < win->btn_max_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_max_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_max_h; yy++) {
+        for (int xx = 0; xx < win->btn_max_w; xx++) {
             int sx = win->x + win->btn_max_x + xx;
             int sy = win->y + win->btn_max_y + yy;
             if (sx >= 0 && sx < sw && sy >= 0 && sy < sh)
                 buf[sy * pitch + sx] = 0xFF666666;
         }
     }
-    for (int xx = 4; xx < 16; xx++)
-    {
+    for (int xx = 4; xx < 16; xx++) {
         int sx1 = win->x + win->btn_max_x + xx;
         int sy1 = win->y + win->btn_max_y + 4;
         int sy2 = win->y + win->btn_max_y + 16;
 
-        if (sx1 >= 0 && sx1 < sw)
-        {
+        if (sx1 >= 0 && sx1 < sw) {
             if (sy1 >= 0 && sy1 < sh)
                 buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
             if (sy2 >= 0 && sy2 < sh)
                 buf[sy2 * pitch + sx1] = 0xFFFFFFFF;
         }
     }
-    for (int yy = 4; yy < 16; yy++)
-    {
+    for (int yy = 4; yy < 16; yy++) {
         int sy = win->y + win->btn_max_y + yy;
         int sx1 = win->x + win->btn_max_x + 4;
         int sx2 = win->x + win->btn_max_x + 16;
 
-        if (sy >= 0 && sy < sh)
-        {
+        if (sy >= 0 && sy < sh) {
             if (sx1 >= 0 && sx1 < sw)
                 buf[sy * pitch + sx1] = 0xFFFFFFFF;
             if (sx2 >= 0 && sx2 < sw)
@@ -692,18 +712,15 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     }
 
     // 关闭按钮
-    for (int yy = 0; yy < win->btn_close_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_close_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_close_h; yy++) {
+        for (int xx = 0; xx < win->btn_close_w; xx++) {
             int sx = win->x + win->btn_close_x + xx;
             int sy = win->y + win->btn_close_y + yy;
             if (sx >= 0 && sx < sw && sy >= 0 && sy < sh)
                 buf[sy * pitch + sx] = 0xFFAA3333;
         }
     }
-    for (int i = 4; i < 16; i++)
-    {
+    for (int i = 4; i < 16; i++) {
         int sx1 = win->x + win->btn_close_x + i;
         int sy1 = win->y + win->btn_close_y + i;
         int sx2 = win->x + win->btn_close_x + (16 - (i - 4));
@@ -722,26 +739,20 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     int by0 = ty;
     int by1 = ty + th + h - 1;
 
-    if (by0 >= 0 && by0 < sh)
-    {
-        for (int x = bx0; x <= bx1; x++)
-        {
+    if (by0 >= 0 && by0 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
             if (x >= 0 && x < sw)
                 buf[by0 * pitch + x] = 0xFF000000;
         }
     }
-    if (by1 >= 0 && by1 < sh)
-    {
-        for (int x = bx0; x <= bx1; x++)
-        {
+    if (by1 >= 0 && by1 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
             if (x >= 0 && x < sw)
                 buf[by1 * pitch + x] = 0xFF000000;
         }
     }
-    for (int y = by0; y <= by1; y++)
-    {
-        if (y >= 0 && y < sh)
-        {
+    for (int y = by0; y <= by1; y++) {
+        if (y >= 0 && y < sh) {
             if (bx0 >= 0 && bx0 < sw)
                 buf[y * pitch + bx0] = 0xFF000000;
             if (bx1 >= 0 && bx1 < sw)
@@ -753,13 +764,11 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
     int bw = win->buf_width;
     int bh = win->buf_height;
 
-    for (int yy = 0; yy < bh; yy++)
-    {
+    for (int yy = 0; yy < bh; yy++) {
         int sy = ty + th + yy;
         if (sy < 0 || sy >= sh)
             continue;
-        for (int xx = 0; xx < bw; xx++)
-        {
+        for (int xx = 0; xx < bw; xx++) {
             int sx = tx + xx;
             if (sx < 0 || sx >= sw)
                 continue;
@@ -769,11 +778,9 @@ static void wm_draw_single_window_to(uint32_t *buf, uint32_t pitch, wm_window_t 
 }
 
 // 带裁剪版本，用于 dirty rect
-static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
-                                      wm_window_t *win,
-                                      int clip_x1, int clip_y1,
-                                      int clip_x2, int clip_y2)
-{
+static void wm_draw_window_clipped_to(uint32_t* buf, uint32_t pitch,
+                                      wm_window_t* win, int clip_x1,
+                                      int clip_y1, int clip_x2, int clip_y2) {
     if (!buf || !g_framebuffer || !win)
         return;
 
@@ -804,14 +811,12 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
         return;
 
     // 标题栏背景
-    for (int y = ty; y < ty + th; y++)
-    {
+    for (int y = ty; y < ty + th; y++) {
         if (y < ry1 || y >= ry2)
             continue;
         if (y < 0 || y >= sh)
             continue;
-        for (int x = tx; x < tx + w; x++)
-        {
+        for (int x = tx; x < tx + w; x++) {
             if (x < rx1 || x >= rx2)
                 continue;
             if (x < 0 || x >= sw)
@@ -821,30 +826,21 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
     }
 
     // 标题文字（不做严格裁剪，简单判断在 clip 内就画）
-    if (g_font)
-    {
+    if (g_font) {
         int text_x = win->x + 8;
         int text_y = win->y + 20;
-        if (text_x < clip_x2 && text_x >= clip_x1 &&
-            text_y < clip_y2 && text_y >= clip_y1)
-        {
-            ttf_draw_text_utf8(
-                g_font,
-                text_x,
-                text_y,
-                20,
-                0xFFFFFFFF,
-                win->title);
+        if (text_x < clip_x2 && text_x >= clip_x1 && text_y < clip_y2 &&
+            text_y >= clip_y1) {
+            ttf_draw_text_utf8(g_font, text_x, text_y, 20, 0xFFFFFFFF,
+                               win->title);
         }
     }
 
     int sw_w = sw; // just alias
 
     // 最小化按钮
-    for (int yy = 0; yy < win->btn_min_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_min_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_min_h; yy++) {
+        for (int xx = 0; xx < win->btn_min_w; xx++) {
             int sx = win->x + win->btn_min_x + xx;
             int sy = win->y + win->btn_min_y + yy;
             if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
@@ -853,8 +849,7 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
                 buf[sy * pitch + sx] = 0xFF666666;
         }
     }
-    for (int xx = 4; xx < 16; xx++)
-    {
+    for (int xx = 4; xx < 16; xx++) {
         int sx = win->x + win->btn_min_x + xx;
         int sy = win->y + win->btn_min_y + 14;
         if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
@@ -864,10 +859,8 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
     }
 
     // 最大化按钮
-    for (int yy = 0; yy < win->btn_max_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_max_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_max_h; yy++) {
+        for (int xx = 0; xx < win->btn_max_w; xx++) {
             int sx = win->x + win->btn_max_x + xx;
             int sy = win->y + win->btn_max_y + yy;
             if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
@@ -876,8 +869,7 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
                 buf[sy * pitch + sx] = 0xFF666666;
         }
     }
-    for (int xx = 4; xx < 16; xx++)
-    {
+    for (int xx = 4; xx < 16; xx++) {
         int sx1 = win->x + win->btn_max_x + xx;
         int sy1 = win->y + win->btn_max_y + 4;
         int sy2 = win->y + win->btn_max_y + 16;
@@ -890,8 +882,7 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
         if (sy2 >= ry1 && sy2 < ry2 && sy2 >= 0 && sy2 < sh)
             buf[sy2 * pitch + sx1] = 0xFFFFFFFF;
     }
-    for (int yy = 4; yy < 16; yy++)
-    {
+    for (int yy = 4; yy < 16; yy++) {
         int sy = win->y + win->btn_max_y + yy;
         int sx1 = win->x + win->btn_max_x + 4;
         int sx2 = win->x + win->btn_max_x + 16;
@@ -905,10 +896,8 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
     }
 
     // 关闭按钮
-    for (int yy = 0; yy < win->btn_close_h; yy++)
-    {
-        for (int xx = 0; xx < win->btn_close_w; xx++)
-        {
+    for (int yy = 0; yy < win->btn_close_h; yy++) {
+        for (int xx = 0; xx < win->btn_close_w; xx++) {
             int sx = win->x + win->btn_close_x + xx;
             int sy = win->y + win->btn_close_y + yy;
             if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
@@ -917,21 +906,18 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
                 buf[sy * pitch + sx] = 0xFFAA3333;
         }
     }
-    for (int i = 4; i < 16; i++)
-    {
+    for (int i = 4; i < 16; i++) {
         int sx1 = win->x + win->btn_close_x + i;
         int sy1 = win->y + win->btn_close_y + i;
         int sx2 = win->x + win->btn_close_x + (16 - (i - 4));
         int sy2 = win->y + win->btn_close_y + i;
 
-        if (sx1 >= rx1 && sx1 < rx2 && sy1 >= ry1 && sy1 < ry2 &&
-            sx1 >= 0 && sx1 < sw_w && sy1 >= 0 && sy1 < sh)
-        {
+        if (sx1 >= rx1 && sx1 < rx2 && sy1 >= ry1 && sy1 < ry2 && sx1 >= 0 &&
+            sx1 < sw_w && sy1 >= 0 && sy1 < sh) {
             buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
         }
-        if (sx2 >= rx1 && sx2 < rx2 && sy2 >= ry1 && sy2 < ry2 &&
-            sx2 >= 0 && sx2 < sw_w && sy2 >= 0 && sy2 < sh)
-        {
+        if (sx2 >= rx1 && sx2 < rx2 && sy2 >= ry1 && sy2 < ry2 && sx2 >= 0 &&
+            sx2 < sw_w && sy2 >= 0 && sy2 < sh) {
             buf[sy2 * pitch + sx2] = 0xFFFFFFFF;
         }
     }
@@ -942,28 +928,23 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
     int by0 = ty;
     int by1 = ty + th + h - 1;
 
-    if (by0 >= ry1 && by0 < ry2 && by0 >= 0 && by0 < sh)
-    {
-        for (int x = bx0; x <= bx1; x++)
-        {
+    if (by0 >= ry1 && by0 < ry2 && by0 >= 0 && by0 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
             if (x < rx1 || x >= rx2)
                 continue;
             if (x >= 0 && x < sw_w)
                 buf[by0 * pitch + x] = 0xFF000000;
         }
     }
-    if (by1 >= ry1 && by1 < ry2 && by1 >= 0 && by1 < sh)
-    {
-        for (int x = bx0; x <= bx1; x++)
-        {
+    if (by1 >= ry1 && by1 < ry2 && by1 >= 0 && by1 < sh) {
+        for (int x = bx0; x <= bx1; x++) {
             if (x < rx1 || x >= rx2)
                 continue;
             if (x >= 0 && x < sw_w)
                 buf[by1 * pitch + x] = 0xFF000000;
         }
     }
-    for (int y = by0; y <= by1; y++)
-    {
+    for (int y = by0; y <= by1; y++) {
         if (y < ry1 || y >= ry2 || y < 0 || y >= sh)
             continue;
         if (bx0 >= rx1 && bx0 < rx2 && bx0 >= 0 && bx0 < sw_w)
@@ -972,34 +953,60 @@ static void wm_draw_window_clipped_to(uint32_t *buf, uint32_t pitch,
             buf[y * pitch + bx1] = 0xFF000000;
     }
 
-    // 内容区
+    // 内容区（逐行 memcpy，预裁剪边界避免 per-pixel 检查）
     int bw = win->buf_width;
     int bh = win->buf_height;
+    int content_x0 = tx;
+    int content_x1 = tx + bw;
 
-    for (int yy = 0; yy < bh; yy++)
-    {
-        int sy = ty + th + yy;
-        if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh)
-            continue;
+    // 将 x 范围预裁剪到脏矩形 & 屏幕边界
+    int cx0 = content_x0 > rx1 ? content_x0 : rx1;
+    cx0 = cx0 > 0 ? cx0 : 0;
+    int cx1 = content_x1 < rx2 ? content_x1 : rx2;
+    cx1 = cx1 < sw_w ? cx1 : sw_w;
 
-        for (int xx = 0; xx < bw; xx++)
-        {
-            int sx = tx + xx;
-            if (sx < rx1 || sx >= rx2 || sx < 0 || sx >= sw_w)
+    if (cx0 < cx1) {
+        int copy_w = cx1 - cx0;
+        int src_off = cx0 - content_x0; // win->buffer 中的列偏移
+
+        serial_puts("[WM_COPY] content: win_id=");
+        serial_putdec32(win->id);
+        serial_puts(" ty=");
+        serial_putdec32(ty);
+        serial_puts(" th=");
+        serial_putdec32(th);
+        serial_puts(" cx0=");
+        serial_putdec32(cx0);
+        serial_puts(" cx1=");
+        serial_putdec32(cx1);
+        serial_puts(" copy_w=");
+        serial_putdec32(copy_w);
+        serial_puts(" src_off=");
+        serial_putdec32(src_off);
+        serial_puts(" ry1=");
+        serial_putdec32(ry1);
+        serial_puts(" ry2=");
+        serial_putdec32(ry2);
+        serial_puts(" bh=");
+        serial_putdec32(bh);
+        serial_puts("\n");
+
+        for (int yy = 0; yy < bh; yy++) {
+            int sy = ty + th + yy;
+            if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh)
                 continue;
 
-            buf[sy * pitch + sx] = win->buffer[yy * bw + xx];
+            memcpy(&buf[sy * pitch + cx0], &win->buffer[yy * bw + src_off],
+                   copy_w * sizeof(uint32_t));
         }
     }
 }
 
 // 支持增量混合的窗口绘制：跳过已被覆盖的像素
-static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
-                                        wm_window_t *win,
-                                        int clip_x1, int clip_y1,
-                                        int clip_x2, int clip_y2,
-                                        bool (*is_covered)(int, int))
-{
+static void wm_draw_window_with_coverage(uint32_t* buf, uint32_t pitch,
+                                         wm_window_t* win, int clip_x1,
+                                         int clip_y1, int clip_x2, int clip_y2,
+                                         bool (*is_covered)(int, int)) {
     if (!buf || !g_framebuffer || !win)
         return;
 
@@ -1029,24 +1036,37 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
 
     bool all_covered = true;
     for (int y = ty; y < ty + th; y++) {
-        if (y < ry1 || y >= ry2) continue;
-        if (y < 0 || y >= sh) continue;
+        if (y < ry1 || y >= ry2)
+            continue;
+        if (y < 0 || y >= sh)
+            continue;
         for (int x = tx; x < tx + w; x++) {
-            if (x < rx1 || x >= rx2) continue;
-            if (x < 0 || x >= sw) continue;
-            if (!is_covered(x, y)) { all_covered = false; break; }
+            if (x < rx1 || x >= rx2)
+                continue;
+            if (x < 0 || x >= sw)
+                continue;
+            if (!is_covered(x, y)) {
+                all_covered = false;
+                break;
+            }
         }
-        if (!all_covered) break;
+        if (!all_covered)
+            break;
     }
 
     if (!all_covered) {
         for (int y = ty; y < ty + th; y++) {
-            if (y < ry1 || y >= ry2) continue;
-            if (y < 0 || y >= sh) continue;
+            if (y < ry1 || y >= ry2)
+                continue;
+            if (y < 0 || y >= sh)
+                continue;
             for (int x = tx; x < tx + w; x++) {
-                if (x < rx1 || x >= rx2) continue;
-                if (x < 0 || x >= sw) continue;
-                if (is_covered(x, y)) continue;
+                if (x < rx1 || x >= rx2)
+                    continue;
+                if (x < 0 || x >= sw)
+                    continue;
+                if (is_covered(x, y))
+                    continue;
                 buf[y * pitch + x] = 0xFF224488;
             }
         }
@@ -1054,9 +1074,10 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
         if (g_font) {
             int text_x = win->x + 8;
             int text_y = win->y + 20;
-            if (text_x < clip_x2 && text_x >= clip_x1 &&
-                text_y < clip_y2 && text_y >= clip_y1) {
-                ttf_draw_text_utf8(g_font, text_x, text_y, 20, 0xFFFFFFFF, win->title);
+            if (text_x < clip_x2 && text_x >= clip_x1 && text_y < clip_y2 &&
+                text_y >= clip_y1) {
+                ttf_draw_text_utf8(g_font, text_x, text_y, 20, 0xFFFFFFFF,
+                                   win->title);
             }
         }
 
@@ -1064,15 +1085,18 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
             for (int xx = 0; xx < win->btn_min_w; xx++) {
                 int sx = win->x + win->btn_min_x + xx;
                 int sy = win->y + win->btn_min_y + yy;
-                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
-                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
+                    continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh &&
+                    !is_covered(sx, sy))
                     buf[sy * pitch + sx] = 0xFF666666;
             }
         }
         for (int xx = 4; xx < 16; xx++) {
             int sx = win->x + win->btn_min_x + xx;
             int sy = win->y + win->btn_min_y + 14;
-            if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
+            if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
+                continue;
             if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
                 buf[sy * pitch + sx] = 0xFFFFFFFF;
         }
@@ -1081,8 +1105,10 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
             for (int xx = 0; xx < win->btn_max_w; xx++) {
                 int sx = win->x + win->btn_max_x + xx;
                 int sy = win->y + win->btn_max_y + yy;
-                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
-                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
+                    continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh &&
+                    !is_covered(sx, sy))
                     buf[sy * pitch + sx] = 0xFF666666;
             }
         }
@@ -1090,20 +1116,26 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
             int sx1 = win->x + win->btn_max_x + xx;
             int sy1 = win->y + win->btn_max_y + 4;
             int sy2 = win->y + win->btn_max_y + 16;
-            if (sx1 < rx1 || sx1 >= rx2) continue;
-            if (sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh && sy1 >= ry1 && sy1 < ry2 && !is_covered(sx1, sy1))
+            if (sx1 < rx1 || sx1 >= rx2)
+                continue;
+            if (sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh && sy1 >= ry1 &&
+                sy1 < ry2 && !is_covered(sx1, sy1))
                 buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
-            if (sx1 >= 0 && sx1 < sw && sy2 >= 0 && sy2 < sh && sy2 >= ry1 && sy2 < ry2 && !is_covered(sx1, sy2))
+            if (sx1 >= 0 && sx1 < sw && sy2 >= 0 && sy2 < sh && sy2 >= ry1 &&
+                sy2 < ry2 && !is_covered(sx1, sy2))
                 buf[sy2 * pitch + sx1] = 0xFFFFFFFF;
         }
         for (int yy = 4; yy < 16; yy++) {
             int sy = win->y + win->btn_max_y + yy;
             int sx1 = win->x + win->btn_max_x + 4;
             int sx2 = win->x + win->btn_max_x + 16;
-            if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh) continue;
-            if (sx1 >= rx1 && sx1 < rx2 && sx1 >= 0 && sx1 < sw && !is_covered(sx1, sy))
+            if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh)
+                continue;
+            if (sx1 >= rx1 && sx1 < rx2 && sx1 >= 0 && sx1 < sw &&
+                !is_covered(sx1, sy))
                 buf[sy * pitch + sx1] = 0xFFFFFFFF;
-            if (sx2 >= rx1 && sx2 < rx2 && sx2 >= 0 && sx2 < sw && !is_covered(sx2, sy))
+            if (sx2 >= rx1 && sx2 < rx2 && sx2 >= 0 && sx2 < sw &&
+                !is_covered(sx2, sy))
                 buf[sy * pitch + sx2] = 0xFFFFFFFF;
         }
 
@@ -1111,8 +1143,10 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
             for (int xx = 0; xx < win->btn_close_w; xx++) {
                 int sx = win->x + win->btn_close_x + xx;
                 int sy = win->y + win->btn_close_y + yy;
-                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2) continue;
-                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh && !is_covered(sx, sy))
+                if (sx < rx1 || sx >= rx2 || sy < ry1 || sy >= ry2)
+                    continue;
+                if (sx >= 0 && sx < sw && sy >= 0 && sy < sh &&
+                    !is_covered(sx, sy))
                     buf[sy * pitch + sx] = 0xFFAA3333;
             }
         }
@@ -1122,10 +1156,12 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
             int sx2 = win->x + win->btn_close_x + (16 - (i - 4));
             int sy2 = win->y + win->btn_close_y + i;
             if (sx1 >= rx1 && sx1 < rx2 && sy1 >= ry1 && sy1 < ry2 &&
-                sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh && !is_covered(sx1, sy1))
+                sx1 >= 0 && sx1 < sw && sy1 >= 0 && sy1 < sh &&
+                !is_covered(sx1, sy1))
                 buf[sy1 * pitch + sx1] = 0xFFFFFFFF;
             if (sx2 >= rx1 && sx2 < rx2 && sy2 >= ry1 && sy2 < ry2 &&
-                sx2 >= 0 && sx2 < sw && sy2 >= 0 && sy2 < sh && !is_covered(sx2, sy2))
+                sx2 >= 0 && sx2 < sw && sy2 >= 0 && sy2 < sh &&
+                !is_covered(sx2, sy2))
                 buf[sy2 * pitch + sx2] = 0xFFFFFFFF;
         }
     }
@@ -1137,23 +1173,28 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
 
     if (by0 >= ry1 && by0 < ry2 && by0 >= 0 && by0 < sh) {
         for (int x = bx0; x <= bx1; x++) {
-            if (x < rx1 || x >= rx2) continue;
+            if (x < rx1 || x >= rx2)
+                continue;
             if (x >= 0 && x < sw && !is_covered(x, by0))
                 buf[by0 * pitch + x] = 0xFF000000;
         }
     }
     if (by1 >= ry1 && by1 < ry2 && by1 >= 0 && by1 < sh) {
         for (int x = bx0; x <= bx1; x++) {
-            if (x < rx1 || x >= rx2) continue;
+            if (x < rx1 || x >= rx2)
+                continue;
             if (x >= 0 && x < sw && !is_covered(x, by1))
                 buf[by1 * pitch + x] = 0xFF000000;
         }
     }
     for (int y = by0; y <= by1; y++) {
-        if (y < ry1 || y >= ry2 || y < 0 || y >= sh) continue;
-        if (bx0 >= rx1 && bx0 < rx2 && bx0 >= 0 && bx0 < sw && !is_covered(bx0, y))
+        if (y < ry1 || y >= ry2 || y < 0 || y >= sh)
+            continue;
+        if (bx0 >= rx1 && bx0 < rx2 && bx0 >= 0 && bx0 < sw &&
+            !is_covered(bx0, y))
             buf[y * pitch + bx0] = 0xFF000000;
-        if (bx1 >= rx1 && bx1 < rx2 && bx1 >= 0 && bx1 < sw && !is_covered(bx1, y))
+        if (bx1 >= rx1 && bx1 < rx2 && bx1 >= 0 && bx1 < sw &&
+            !is_covered(bx1, y))
             buf[y * pitch + bx1] = 0xFF000000;
     }
 
@@ -1161,11 +1202,14 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
     int bh = win->buf_height;
     for (int yy = 0; yy < bh; yy++) {
         int sy = ty + th + yy;
-        if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh) continue;
+        if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh)
+            continue;
         for (int xx = 0; xx < bw; xx++) {
             int sx = tx + xx;
-            if (sx < rx1 || sx >= rx2 || sx < 0 || sx >= sw) continue;
-            if (is_covered(sx, sy)) continue;
+            if (sx < rx1 || sx >= rx2 || sx < 0 || sx >= sw)
+                continue;
+            if (is_covered(sx, sy))
+                continue;
             buf[sy * pitch + sx] = win->buffer[yy * bw + xx];
         }
     }
@@ -1175,17 +1219,16 @@ static void wm_draw_window_with_coverage(uint32_t *buf, uint32_t pitch,
 // 重绘：dirty rect 版本（支持增量混合）
 // ------------------------------------------------
 
-void wm_redraw_dirty(void)
-{
+void wm_redraw_dirty(void) {
     if (!g_framebuffer || !g_backbuffer || !g_dirty_queue.pending)
         return;
 
-    uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
+    uint32_t* fb = (uint32_t*)g_framebuffer->framebuffer_addr;
     uint32_t fb_p = g_framebuffer->framebuffer_pitch >> 2;
     int sw = g_framebuffer->framebuffer_width;
     int sh = g_framebuffer->framebuffer_height;
 
-    uint32_t *bb = g_backbuffer;
+    uint32_t* bb = g_backbuffer;
     uint32_t bb_p = g_backbuffer_pitch;
 
     coverage_init(sw, sh);
@@ -1199,21 +1242,23 @@ void wm_redraw_dirty(void)
         int x2 = rect.x2;
         int y2 = rect.y2;
 
-        if (x1 < 0) x1 = 0;
-        if (y1 < 0) y1 = 0;
-        if (x2 > sw) x2 = sw;
-        if (y2 > sh) y2 = sh;
+        if (x1 < 0)
+            x1 = 0;
+        if (y1 < 0)
+            y1 = 0;
+        if (x2 > sw)
+            x2 = sw;
+        if (y2 > sh)
+            y2 = sh;
 
         if (x1 >= x2 || y1 >= y2)
             continue;
 
-        for (int y = y1; y < y2; y++)
-        {
+        for (int y = y1; y < y2; y++) {
             if (y < 0 || y >= sh)
                 continue;
-            uint32_t *row = &bb[y * bb_p];
-            for (int x = x1; x < x2; x++)
-            {
+            uint32_t* row = &bb[y * bb_p];
+            for (int x = x1; x < x2; x++) {
                 if (x < 0 || x >= sw)
                     continue;
                 row[x] = 0xFF169DE2;
@@ -1222,14 +1267,29 @@ void wm_redraw_dirty(void)
 
         coverage_clear_rect(x1, y1, x2, y2);
 
-        wm_window_t *windows[128];
+        serial_puts("[WM_DIRTY] rect: x1=");
+        serial_putdec32(x1);
+        serial_puts(" y1=");
+        serial_putdec32(y1);
+        serial_puts(" x2=");
+        serial_putdec32(x2);
+        serial_puts(" y2=");
+        serial_putdec32(y2);
+        serial_puts(" sw=");
+        serial_putdec32(sw);
+        serial_puts(" sh=");
+        serial_putdec32(sh);
+        serial_puts("\n");
+
+        wm_window_t* windows[128];
         int win_count = 0;
-        for (wm_window_t *w = g_window_list; w && win_count < 128; w = w->next) {
+        for (wm_window_t* w = g_window_list; w && win_count < 128;
+             w = w->next) {
             windows[win_count++] = w;
         }
 
         for (int i = win_count - 1; i >= 0; i--) {
-            wm_window_t *win = windows[i];
+            wm_window_t* win = windows[i];
             if (!win->visible || win->minimized)
                 continue;
 
@@ -1238,21 +1298,33 @@ void wm_redraw_dirty(void)
             int wx2 = win->x + win->width;
             int wy2 = win->y + win->title_height + win->height;
 
-            if (wx1 >= x2 || wy1 >= y2 || wx2 <= x1 || wy2 <= y1)
+            serial_puts("[WM_WIN] id=");
+            serial_putdec32(win->id);
+            serial_puts(" wx1=");
+            serial_putdec32(wx1);
+            serial_puts(" wy1=");
+            serial_putdec32(wy1);
+            serial_puts(" wx2=");
+            serial_putdec32(wx2);
+            serial_puts(" wy2=");
+            serial_putdec32(wy2);
+            if (wx1 >= x2 || wy1 >= y2 || wx2 <= x1 || wy2 <= y1) {
+                serial_puts(" SKIP\n");
                 continue;
+            }
+            serial_puts(" DRAW\n");
 
             if (g_incremental_render_enabled) {
-                wm_draw_window_with_coverage(bb, bb_p, win, x1, y1, x2, y2, coverage_is_pixel_covered);
+                wm_draw_window_with_coverage(bb, bb_p, win, x1, y1, x2, y2,
+                                             coverage_is_pixel_covered);
                 coverage_set_rect(wx1, wy1, wx2, wy2);
             } else {
                 wm_draw_window_clipped_to(bb, bb_p, win, x1, y1, x2, y2);
             }
         }
 
-        for (int x = x1; x < x2; x++)
-        {
-            for (int y = g_screen_h - 28; y < g_screen_h; y++)
-            {
+        for (int x = x1; x < x2; x++) {
+            for (int y = g_screen_h - 28; y < g_screen_h; y++) {
                 if (y < y1 || y >= y2)
                     continue;
                 if (x < 0 || x >= sw || y < 0 || y >= sh)
@@ -1261,18 +1333,15 @@ void wm_redraw_dirty(void)
             }
         }
 
-        for (int i = 0; i < g_taskbar_count; i++)
-        {
-            taskbar_button_t *b = &g_taskbar[i];
-            for (int yy = 0; yy < b->h; yy++)
-            {
+        for (int i = 0; i < g_taskbar_count; i++) {
+            taskbar_button_t* b = &g_taskbar[i];
+            for (int yy = 0; yy < b->h; yy++) {
                 int sy = b->y + yy;
                 if (sy < y1 || sy >= y2)
                     continue;
                 if (sy < 0 || sy >= sh)
                     continue;
-                for (int xx = 0; xx < b->w; xx++)
-                {
+                for (int xx = 0; xx < b->w; xx++) {
                     int sx = b->x + xx;
                     if (sx < x1 || sx >= x2)
                         continue;
@@ -1281,31 +1350,22 @@ void wm_redraw_dirty(void)
                     bb[sy * bb_p + sx] = 0xFF505050;
                 }
             }
-            if (g_font)
-            {
+            if (g_font) {
                 int tx = b->x + 6;
                 int ty = b->y + 19;
-                if (tx < x2 && tx >= x1 && ty < y2 && ty >= y1)
-                {
-                    ttf_draw_text_utf8(
-                        g_font,
-                        tx,
-                        ty,
-                        18,
-                        0xFFFFFFFF,
-                        b->win->title);
+                if (tx < x2 && tx >= x1 && ty < y2 && ty >= y1) {
+                    ttf_draw_text_utf8(g_font, tx, ty, 18, 0xFFFFFFFF,
+                                       b->win->title);
                 }
             }
         }
 
-        for (int y = y1; y < y2; y++)
-        {
+        for (int y = y1; y < y2; y++) {
             if (y < 0 || y >= sh)
                 continue;
-            uint32_t *src = &bb[y * bb_p];
-            uint32_t *dst = &fb[y * fb_p];
-            for (int x = x1; x < x2; x++)
-            {
+            uint32_t* src = &bb[y * bb_p];
+            uint32_t* dst = &fb[y * fb_p];
+            for (int x = x1; x < x2; x++) {
                 if (x < 0 || x >= sw)
                     continue;
                 dst[x] = src[x];
@@ -1317,8 +1377,7 @@ void wm_redraw_dirty(void)
 }
 
 // 兼容旧接口：全屏重绘 → 实际用 dirty rect 完成
-void wm_redraw(void)
-{
+void wm_redraw(void) {
     wm_invalidate_rect(0, 0, g_screen_w, g_screen_h);
     wm_redraw_dirty();
 }
@@ -1327,12 +1386,11 @@ void wm_redraw(void)
 // 鼠标事件处理
 // ------------------------------------------------
 
-static void wm_draw_xor_rect_fb(int x, int y, int w, int h)
-{
+static void wm_draw_xor_rect_fb(int x, int y, int w, int h) {
     if (!g_framebuffer)
         return;
 
-    uint32_t *fb = (uint32_t *)g_framebuffer->framebuffer_addr;
+    uint32_t* fb = (uint32_t*)g_framebuffer->framebuffer_addr;
     uint32_t pitch = g_framebuffer->framebuffer_pitch >> 2;
     int sw = g_framebuffer->framebuffer_width;
     int sh = g_framebuffer->framebuffer_height;
@@ -1354,55 +1412,47 @@ static void wm_draw_xor_rect_fb(int x, int y, int w, int h)
         return;
 
     // 上边
-    for (int xx = x1; xx < x2; xx++)
-    {
-        uint32_t *p = &fb[y1 * pitch + xx];
+    for (int xx = x1; xx < x2; xx++) {
+        uint32_t* p = &fb[y1 * pitch + xx];
         *p ^= 0x00FFFFFF;
     }
     // 下边
-    if (y2 - 1 >= y1 && y2 - 1 < sh)
-    {
-        for (int xx = x1; xx < x2; xx++)
-        {
-            uint32_t *p = &fb[(y2 - 1) * pitch + xx];
+    if (y2 - 1 >= y1 && y2 - 1 < sh) {
+        for (int xx = x1; xx < x2; xx++) {
+            uint32_t* p = &fb[(y2 - 1) * pitch + xx];
             *p ^= 0x00FFFFFF;
         }
     }
     // 左边
-    for (int yy = y1; yy < y2; yy++)
-    {
-        uint32_t *p = &fb[yy * pitch + x1];
+    for (int yy = y1; yy < y2; yy++) {
+        uint32_t* p = &fb[yy * pitch + x1];
         *p ^= 0x00FFFFFF;
     }
     // 右边
-    if (x2 - 1 >= x1 && x2 - 1 < sw)
-    {
-        for (int yy = y1; yy < y2; yy++)
-        {
-            uint32_t *p = &fb[yy * pitch + (x2 - 1)];
+    if (x2 - 1 >= x1 && x2 - 1 < sw) {
+        for (int yy = y1; yy < y2; yy++) {
+            uint32_t* p = &fb[yy * pitch + (x2 - 1)];
             *p ^= 0x00FFFFFF;
         }
     }
 }
 
-bool wm_handle_mouse(int x, int y, bool left_down)
-{
+bool wm_handle_mouse(int x, int y, bool left_down) {
     static bool prev_left_down = false;
     bool window_moved = false;
 
     // 1. 鼠标刚按下
-    if (left_down && !prev_left_down)
-    {
+    if (left_down && !prev_left_down) {
         // 1.1 先检查任务栏按钮
-        for (int i = 0; i < g_taskbar_count; i++)
-        {
-            taskbar_button_t *b = &g_taskbar[i];
-            if (x >= b->x && x < b->x + b->w &&
-                y >= b->y && y < b->y + b->h)
-            {
+        for (int i = 0; i < g_taskbar_count; i++) {
+            taskbar_button_t* b = &g_taskbar[i];
+            if (x >= b->x && x < b->x + b->w && y >= b->y && y < b->y + b->h) {
 
                 b->win->visible = true;
                 b->win->minimized = false;
+
+                // 点击任务栏按钮 → 移到同层最前
+                wm_bring_to_front(b->win);
 
                 wm_invalidate_window(b->win);
                 wm_redraw_dirty();
@@ -1413,18 +1463,18 @@ bool wm_handle_mouse(int x, int y, bool left_down)
         }
 
         // 1.2 检查是否点到窗口
-        wm_window_t *hit = wm_pick_window_at(x, y);
-        if (hit)
-        {
+        wm_window_t* hit = wm_pick_window_at(x, y);
+        if (hit) {
             int lx = x - hit->x;
             int ly = y - hit->y;
 
             hit->on_mouse(hit, lx, ly, left_down);
 
-            // 点击最小化按钮
-            if (lx >= hit->btn_min_x && lx < hit->btn_min_x + hit->btn_min_w &&
-                ly >= hit->btn_min_y && ly < hit->btn_min_y + hit->btn_min_h)
-            {
+            // 点击最小化按钮（+2px 角落容差）
+            if (lx >= hit->btn_min_x - 2 &&
+                lx < hit->btn_min_x + hit->btn_min_w + 2 &&
+                ly >= hit->btn_min_y - 2 &&
+                ly < hit->btn_min_y + hit->btn_min_h + 2) {
 
                 hit->visible = false;
                 hit->minimized = true;
@@ -1437,13 +1487,13 @@ bool wm_handle_mouse(int x, int y, bool left_down)
                 return false;
             }
 
-            // 点击最大化按钮
-            if (lx >= hit->btn_max_x && lx < hit->btn_max_x + hit->btn_max_w &&
-                ly >= hit->btn_max_y && ly < hit->btn_max_y + hit->btn_max_h)
-            {
+            // 点击最大化按钮（+2px 角落容差）
+            if (lx >= hit->btn_max_x - 2 &&
+                lx < hit->btn_max_x + hit->btn_max_w + 2 &&
+                ly >= hit->btn_max_y - 2 &&
+                ly < hit->btn_max_y + hit->btn_max_h + 2) {
 
-                if (!hit->maximized)
-                {
+                if (!hit->maximized) {
                     hit->restore_x = hit->x;
                     hit->restore_y = hit->y;
                     hit->restore_w = hit->width;
@@ -1460,9 +1510,7 @@ bool wm_handle_mouse(int x, int y, bool left_down)
                     wm_update_titlebar_buttons(hit);
                     if (hit->draw)
                         hit->draw(hit);
-                }
-                else
-                {
+                } else {
                     // 保存旧位置用于重绘背景
                     int old_x = hit->x;
                     int old_y = hit->y;
@@ -1492,10 +1540,11 @@ bool wm_handle_mouse(int x, int y, bool left_down)
                 return false;
             }
 
-            // 点击关闭按钮
-            if (lx >= hit->btn_close_x && lx < hit->btn_close_x + hit->btn_close_w &&
-                ly >= hit->btn_close_y && ly < hit->btn_close_y + hit->btn_close_h)
-            {
+            // 点击关闭按钮（+2px 角落容差）
+            if (lx >= hit->btn_close_x - 2 &&
+                lx < hit->btn_close_x + hit->btn_close_w + 2 &&
+                ly >= hit->btn_close_y - 2 &&
+                ly < hit->btn_close_y + hit->btn_close_h + 2) {
 
                 wm_invalidate_window(hit);
                 wm_close_window(hit);
@@ -1507,8 +1556,11 @@ bool wm_handle_mouse(int x, int y, bool left_down)
 
             // 标题栏拖动开始：只画 XOR 框，不移动窗口
             // 全屏窗口不允许拖动
-            if (y >= hit->y && y < hit->y + hit->title_height && !hit->maximized)
-            {
+            if (y >= hit->y && y < hit->y + hit->title_height &&
+                !hit->maximized) {
+                // 点击 → 移到同层最前
+                wm_bring_to_front(hit);
+
                 g_dragging_window = hit;
                 hit->is_moving = true;
                 hit->drag_offset_x = x - hit->x;
@@ -1525,20 +1577,21 @@ bool wm_handle_mouse(int x, int y, bool left_down)
                 g_xor_last_h = hit->title_height + hit->height;
 
                 // 画第一次 XOR 框（原始位置）
-                wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y,
-                                    g_xor_last_w, g_xor_last_h);
+                wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y, g_xor_last_w,
+                                    g_xor_last_h);
 
                 prev_left_down = left_down;
                 return false;
             }
 
             // 内容区事件回调
-            if (hit->on_mouse)
-            {
+            if (hit->on_mouse) {
                 int content_lx = lx;
                 int content_ly = ly - hit->title_height;
-                if (content_ly >= 0)
-                {
+                if (content_ly >= 0) {
+                    // 点击内容区 → 移到同层最前
+                    wm_bring_to_front(hit);
+
                     hit->on_mouse(hit, content_lx, content_ly, left_down);
                     wm_invalidate_window(hit);
                     wm_redraw_dirty();
@@ -1550,20 +1603,19 @@ bool wm_handle_mouse(int x, int y, bool left_down)
     }
 
     // 2. 鼠标按住移动（拖动预览，仅动 XOR 框）
-    if (left_down && g_dragging_window && g_dragging_window->is_moving && g_xor_drag_active)
-    {
-        wm_window_t *win = g_dragging_window;
+    if (left_down && g_dragging_window && g_dragging_window->is_moving &&
+        g_xor_drag_active) {
+        wm_window_t* win = g_dragging_window;
 
         int new_x = x - win->drag_offset_x;
         int new_y = y - win->drag_offset_y;
         int new_w = win->width;
         int new_h = win->title_height + win->height;
 
-        if (new_x != g_xor_last_x || new_y != g_xor_last_y)
-        {
+        if (new_x != g_xor_last_x || new_y != g_xor_last_y) {
             // 擦掉旧 XOR 框
-            wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y,
-                                g_xor_last_w, g_xor_last_h);
+            wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y, g_xor_last_w,
+                                g_xor_last_h);
 
             // 更新位置，画新 XOR 框
             g_xor_last_x = new_x;
@@ -1571,8 +1623,8 @@ bool wm_handle_mouse(int x, int y, bool left_down)
             g_xor_last_w = new_w;
             g_xor_last_h = new_h;
 
-            wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y,
-                                g_xor_last_w, g_xor_last_h);
+            wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y, g_xor_last_w,
+                                g_xor_last_h);
         }
 
         prev_left_down = left_down;
@@ -1580,17 +1632,14 @@ bool wm_handle_mouse(int x, int y, bool left_down)
     }
 
     // 3. 鼠标松开（结束拖动，应用移动）
-    if (!left_down && prev_left_down)
-    {
-        if (g_dragging_window && preview_active)
-        {
-            wm_window_t *win = g_dragging_window;
+    if (!left_down && prev_left_down) {
+        if (g_dragging_window && preview_active) {
+            wm_window_t* win = g_dragging_window;
 
-            if (g_xor_drag_active)
-            {
+            if (g_xor_drag_active) {
                 // 擦掉最后一次 XOR 框
-                wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y,
-                                    g_xor_last_w, g_xor_last_h);
+                wm_draw_xor_rect_fb(g_xor_last_x, g_xor_last_y, g_xor_last_w,
+                                    g_xor_last_h);
                 g_xor_drag_active = false;
             }
 

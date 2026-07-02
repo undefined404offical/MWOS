@@ -1,43 +1,4 @@
-/*
-                   _ooOoo_
-                  o8888888o
-                  88" . "88
-                  (| -_- |)
-                  O\  =  /O
-               ____/`---'\____
-             .'  \\|     |//  `.
-            /  \\|||  :  |||//  \
-           /  _||||| -:- |||||-  \
-           |   | \\\  -  /// |   |
-           | \_|  ''\---/''  |   |
-           \  .-\__  `-`  ___/-. /
-         ___`. .'  /--.--\  `. . __
-      ."" '<  `.___\_<|>_/___.'  >'"".
-     | | :  `- \`.;`\ _ /`;.`/ - ` : | |
-     \  \ `-.   \_ __\ /__ _/   .-` /  /
-======`-.____`-.___\_____/___.-`____.-'======
-                   `=---='
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            佛祖保佑       永无BUG
-
-              ,----------------,              ,---------,
-         ,-----------------------,          ,"        ,"|
-       ,"                      ,"|        ,"        ,"  |
-      +-----------------------+  |      ,"        ,"    |
-      |  .-----------------.  |  |     +---------+      |
-      |  |                 |  |  |     | -==----'|      |
-      |  |  Never gonna    |  |  |     |         |      |
-      |  |  Give you bug   |  |  |/----|`---=    |      |
-      |  |  C:\>_          |  |  |   ,/|==== ooo |      ;
-      |  |                 |  |  |  // |(((( [33]|    ,"
-      |  `-----------------'  |," .;'| |((((     |  ,"
-      +-----------------------+  ;;  | |         |,"
-         /_)______________(_/  //'   | +---------+
-    ___________________________/___  `,
-   /  oooooooooooooooo  .o.  oooo /,   \,"-----------
-  / ==ooooooooooooooo==.o.  ooo= //   ,`\--{)B     ,"
- /_==__==========__==_ooo__ooo=_/'   /___________,"
-*/
+// 出错先看是不是对齐问题！！！
 
 #include "boot_splash.h"
 #include "drivers/disk.h"
@@ -141,12 +102,13 @@ u_entry(void* params) {
     }
 }
 
+// 内核主程序
 __attribute__((ms_abi, target("no-sse"), target("general-regs-only"))) void
 kmain(void* params) {
     (void)params;
 
+    // 高半区调试信息
     serial_puts("kmain: now in high-half\n");
-
     serial_puthex64(kernel_params.memory_map_addr);
     serial_puts("\n");
     serial_puthex64(kernel_params.memory_map_size);
@@ -157,55 +119,62 @@ kmain(void* params) {
     serial_putdec64(kernel_params.framebuffer_bpp);
     serial_puts("\n");
 
+    // 图形系统初始化
     kinfo("SYS", "Initializing graphics subsystem");
     graphics_init(&kernel_params);
 
+    // boot splash显示
     boot_splash_init();
     boot_splash_log("MWOS Kernel Starting", 0xFFFFFFFF);
     boot_splash_set_progress(5);
     boot_splash_present();
 
+    // gdt加载
     kinfo("GDT", "Initializing Global Descriptor Table");
     gdt_init();
     boot_splash_log("GDT initialized", 0x88FF88);
     boot_splash_set_progress(10);
     boot_splash_present();
 
+    // idt加载
     kinfo("IDT", "Initializing Interrupt Descriptor Table");
     idt_init();
     boot_splash_log("IDT initialized", 0x88FF88);
     boot_splash_set_progress(15);
     boot_splash_present();
 
+    // pic加载
     kinfo("PIC", "Remapping PIC: IRQs at 0x20-0x2F");
     pic_remap(32, 40);
     boot_splash_log("PIC remapped", 0x88FF88);
     boot_splash_set_progress(20);
     boot_splash_present();
 
+    // 计时器加载
     kinfo("TIMER", "Initializing PIT at 1000 Hz");
     timer_init(1000);
     boot_splash_log("PIT initialized", 0x88FF88);
     boot_splash_set_progress(25);
     boot_splash_present();
 
+    // pci总线扫描
     kinfo("PCI", "Scanning PCI bus");
     pci_scan_bus();
     boot_splash_log("PCI bus scanned", 0x88FF88);
     boot_splash_set_progress(35);
     boot_splash_present();
 
+    // 磁盘控制器加载
     kinfo("DISK", "Initializing disk controllers");
     disk_init();
     boot_splash_log("Disk controllers initialized", 0x88FF88);
     boot_splash_set_progress(45);
     boot_splash_present();
 
+    // 挂载磁盘系统
     kinfo("FS", "Detecting and mounting FAT32 filesystem");
     uint32_t lba = detect_fat32_partition();
-
     fscache_init();
-
     if (!fat32_mount(lba)) {
         kerror("FS", "FAT32 mount failed: %s", fat32_get_error());
         boot_splash_log("FAT32 mount FAILED", 0xFF6666);
@@ -216,14 +185,13 @@ kmain(void* params) {
     boot_splash_set_progress(55);
     boot_splash_present();
 
+    // 加载字体系统和默认字体
     kinfo("FONT", "Loading system font");
     g_klog_screen = false;
     klog_to_screen = false;
-
     font_manager_init();
 
     g_klog_font = ttf_load_from_path("/sys/fonts/MN-L.ttf");
-
     g_font = g_klog_font;
     if (!g_font) {
         kerror("FONT", "Failed to load window system font, text rendering will "
@@ -236,33 +204,36 @@ kmain(void* params) {
     boot_splash_set_progress(65);
     boot_splash_present();
 
+    // 初始化ps/2键盘
     kinfo("INPUT", "Initializing PS/2 keyboard");
     keyboard_init();
     boot_splash_log("Keyboard initialized", 0x88FF88);
     boot_splash_set_progress(70);
     boot_splash_present();
 
+    // ps/2鼠标
     kinfo("INPUT", "Initializing PS/2 mouse");
     mouse_init();
     boot_splash_log("Mouse initialized", 0x88FF88);
     boot_splash_set_progress(75);
     boot_splash_present();
 
+    // 加载pic
     outb(0x21, 0xF8);
     outb(0xA1, 0xEF);
     asm volatile("sti");
-
     kinfo("PIC", "PIC interrupt masking configured");
     boot_splash_set_progress(80);
     boot_splash_present();
 
+    // 加载终端
     kinfo("SHELL", "Initializing command shell");
     boot_splash_set_progress(85);
     boot_splash_present();
 
+    // 加载wm
     screen_width = kernel_params.framebuffer_width;
     screen_height = kernel_params.framebuffer_height;
-
     kinfo("WM", "Initializing window manager: %ux%u", screen_width,
           screen_height);
     g_klog_screen = false;
@@ -271,20 +242,19 @@ kmain(void* params) {
     boot_splash_log("Window manager initialized", 0x88FF88);
     boot_splash_set_progress(100);
     boot_splash_present();
-
     screen_width = kernel_params.framebuffer_width;
     screen_height = kernel_params.framebuffer_height;
 
+    // 初始化终端
     kinfo("TERM", "Initializing terminal module");
     terminal_init();
 
+    // 初始化终端窗口
     kinfo("TERM", "Creating Terminal window");
     terminal_create_window(50, 50, 1200, 700);
-
     serial_puts("TERM: Font status: ");
     serial_puts(g_font ? "Loaded" : "Not available");
     serial_puts("\n");
-
     wm_window_t* term_win = terminal_get_window();
     if (term_win) {
         serial_puts("TERM: Window created at ");
@@ -296,25 +266,21 @@ kmain(void* params) {
         serial_puts("x");
         serial_putdec32(term_win->height);
         serial_puts("\n");
-
         shell_init();
         shell_set_output(terminal_output);
         shell_print_prompt();
-
         wm_redraw();
         graphics_present();
     } else {
         kerror("TERM", "Failed to create terminal window");
     }
 
-    kinfo("THREAD", "Creating idle thread");
-    thread_create(idle_thread, NULL, 0);
-
+    // 开启调度器
     kinfo("SCHED", "Starting scheduler");
     scheduler_start();
 
+    // 主循环
     kinfo("SYS", "MWOS initialization complete. Entering main loop.");
-
     for (;;) {
         wm_redraw_dirty();
         mouse_save_bg(mouse_x, mouse_y);

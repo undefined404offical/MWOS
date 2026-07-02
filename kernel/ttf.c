@@ -81,7 +81,8 @@ typedef struct {
     int bearingX; // 基线到 bitmap 左边缘
     int bearingY; // 基线到 bitmap 上边缘（向上为正）
 
-    uint8_t* alpha; // width × height，0 = 空，255 = 实心
+    int16_t advance_width; // 字体单位 advance width（从 hmtx 表缓存）
+    uint8_t* alpha;        // width × height，0 = 空，255 = 实心
     bool used;
 } TTF_GlyphCacheEntry;
 
@@ -147,7 +148,7 @@ static TTF_GlyphCacheEntry* glyph_cache_insert(uint16_t glyph_index,
  * ================================================================= */
 static bool render_glyph_to_cache(TTF_GlyphCacheEntry* e, stbtt_fontinfo* stb,
                                   uint16_t glyph_index, uint16_t pixel_size) {
-    float scale = stbtt_ScaleForPixelHeight(stb, (float)pixel_size);
+    float scale = stbtt_ScaleForMappingEmToPixels(stb, (float)pixel_size);
 
     int ix0, iy0, ix1, iy1;
     stbtt_GetGlyphBitmapBox(stb, glyph_index, scale, scale, &ix0, &iy0, &ix1,
@@ -171,6 +172,11 @@ static bool render_glyph_to_cache(TTF_GlyphCacheEntry* e, stbtt_fontinfo* stb,
 
     // stb 从字体单位 → 像素，输出 8-bit alpha（0=透明，255=实心）
     stbtt_MakeGlyphBitmap(stb, e->alpha, w, h, w, scale, scale, glyph_index);
+
+    // 缓存 advance width（字体单位），避免逐字符 stbtt_GetGlyphHMetrics
+    int adv;
+    stbtt_GetGlyphHMetrics(stb, glyph_index, &adv, NULL);
+    e->advance_width = (int16_t)adv;
     return true;
 }
 
@@ -255,6 +261,30 @@ static void blit_glyph_bitmap_buf(const TTF_GlyphCacheEntry* e, int x, int y,
 
     int dst_x0 = x + e->xMin;
     int dst_y0 = y + e->yMin;
+
+    serial_puts("[BLIT] glyph=");
+    serial_putdec32(e->glyph_index);
+    serial_puts(" pen_x=");
+    serial_putdec32(x);
+    serial_puts(" pen_y=");
+    serial_putdec32(y);
+    serial_puts(" dst_x0=");
+    serial_putdec32(dst_x0);
+    serial_puts(" dst_y0=");
+    serial_putdec32(dst_y0);
+    serial_puts(" w=");
+    serial_putdec32(e->width);
+    serial_puts(" h=");
+    serial_putdec32(e->height);
+    serial_puts(" xMin=");
+    serial_putdec32(e->xMin);
+    serial_puts(" yMin=");
+    serial_putdec32(e->yMin);
+    serial_puts(" buf_w=");
+    serial_putdec32(buf_w);
+    serial_puts(" buf_h=");
+    serial_putdec32(buf_h);
+    serial_puts("\n");
 
     int by_min = 0, by_max = e->height - 1;
     if (dst_y0 + by_min < 0)
@@ -539,7 +569,9 @@ void ttf_draw_text_utf8(const TTF_Font* font, int x, int y, int pixel_size,
         }
 
         ttf_draw_glyph(font, glyph, pen_x, y, pixel_size, color);
-        int adv = get_unit_advance(font, glyph);
+        TTF_GlyphCacheEntry* ce =
+            glyph_cache_lookup(glyph, (uint16_t)pixel_size);
+        int adv = ce ? ce->advance_width : get_unit_advance(font, glyph);
         pen_x += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
     }
 }
@@ -571,7 +603,9 @@ void ttf_draw_text_utf8_fb(const TTF_Font* font, int x, int y, int pixel_size,
         }
 
         ttf_draw_glyph_fb(font, glyph, pen_x, y, pixel_size, color);
-        int adv = get_unit_advance(font, glyph);
+        TTF_GlyphCacheEntry* ce =
+            glyph_cache_lookup(glyph, (uint16_t)pixel_size);
+        int adv = ce ? ce->advance_width : get_unit_advance(font, glyph);
         pen_x += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
     }
 }
@@ -584,6 +618,17 @@ void ttf_draw_text_utf8_buf(const TTF_Font* font, int x, int y, int pixel_size,
 
     int pen_x = x;
     const char* p = utf8;
+    int char_count = 0;
+
+    serial_puts("[TTF_COORD] ttf_draw_text_utf8_buf start: x=");
+    serial_putdec32(x);
+    serial_puts(" y=");
+    serial_putdec32(y);
+    serial_puts(" pixel_size=");
+    serial_putdec32(pixel_size);
+    serial_puts(" text='");
+    serial_puts(utf8);
+    serial_puts("'\n");
 
     while (*p) {
         uint32_t cp = utf8_decode(&p);
@@ -603,11 +648,78 @@ void ttf_draw_text_utf8_buf(const TTF_Font* font, int x, int y, int pixel_size,
             continue;
         }
 
+        if (char_count == 0) {
+            serial_puts("[TTF_COORD] first char: cp=");
+            serial_putdec32(cp);
+            serial_puts(" glyph=");
+            serial_putdec32(glyph);
+            serial_puts(" pen_x=");
+            serial_putdec32(pen_x);
+            serial_puts(" y=");
+            serial_putdec32(y);
+            serial_puts(" buf_w=");
+            serial_putdec32(buf_w);
+            serial_puts(" buf_h=");
+            serial_putdec32(buf_h);
+            serial_puts("\n");
+        }
+
         ttf_draw_glyph_buf(font, glyph, pen_x, y, pixel_size, color, buf, buf_w,
                            buf_h);
-        int adv = get_unit_advance(font, glyph);
-        pen_x += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
+        TTF_GlyphCacheEntry* ce =
+            glyph_cache_lookup(glyph, (uint16_t)pixel_size);
+        int adv = ce ? ce->advance_width : get_unit_advance(font, glyph);
+        int advance_pixels =
+            (int)((int64_t)adv * pixel_size / font->unitsPerEm);
+
+        if (char_count == 0) {
+            serial_puts("[TTF_COORD] first char advance: adv_unit=");
+            serial_putdec32(adv);
+            serial_puts(" adv_pixels=");
+            serial_putdec32(advance_pixels);
+            serial_puts(" next_pen_x=");
+            serial_putdec32(pen_x + advance_pixels);
+            serial_puts("\n");
+        }
+
+        pen_x += advance_pixels;
+        char_count++;
     }
+
+    serial_puts("[TTF_COORD] ttf_draw_text_utf8_buf end: total_chars=");
+    serial_putdec32(char_count);
+    serial_puts(" final_pen_x=");
+    serial_putdec32(pen_x);
+    serial_puts("\n");
+}
+
+// 计算 UTF‑8 文本在不同像素大小下的宽度（像素），不执行渲染
+int ttf_text_width(const TTF_Font* font, int pixel_size, const char* utf8) {
+    if (!font || !utf8)
+        return 0;
+
+    int total_width = 0;
+    const char* p = utf8;
+
+    while (*p) {
+        uint32_t cp = utf8_decode(&p);
+        if (cp == '\n')
+            continue;
+
+        uint16_t glyph = ttf_char_to_glyph(font, cp);
+        if (glyph == 0) {
+            int adv = get_unit_advance(font, ttf_char_to_glyph(font, ' '));
+            total_width += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
+            continue;
+        }
+
+        TTF_GlyphCacheEntry* ce =
+            glyph_cache_lookup(glyph, (uint16_t)pixel_size);
+        int adv = ce ? ce->advance_width : get_unit_advance(font, glyph);
+        total_width += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
+    }
+
+    return total_width;
 }
 
 /* =================================================================

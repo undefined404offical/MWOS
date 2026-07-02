@@ -1,6 +1,8 @@
 #include "shell.h"
+#include "drivers/fs/fat32.h"
 #include "klog.h"
 #include "memory.h"
+#include "serial.h"
 #include "string.h"
 #include "terminal.h"
 
@@ -194,7 +196,6 @@ static void builtin_ls(int argc, char** argv);
 static void builtin_cd(int argc, char** argv);
 static void builtin_pwd(int argc, char** argv);
 static void builtin_cat(int argc, char** argv);
-static void builtin_exec(int argc, char** argv);
 static void builtin_history(int argc, char** argv);
 static void builtin_exit(int argc, char** argv);
 static void builtin_whoami(int argc, char** argv);
@@ -218,7 +219,6 @@ void shell_init(void) {
     shell_register_command("cd", "Change current directory", builtin_cd);
     shell_register_command("pwd", "Print working directory", builtin_pwd);
     shell_register_command("cat", "Display file contents", builtin_cat);
-    shell_register_command("exec", "Execute a program", builtin_exec);
     shell_register_command("history", "Show command history", builtin_history);
     shell_register_command("exit", "Exit the shell", builtin_exit);
     shell_register_command("whoami", "Show current user", builtin_whoami);
@@ -537,9 +537,72 @@ static void builtin_clear(int argc, char** argv) {
 }
 
 static void builtin_ls(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+
     const char* path = (argc > 1) ? argv[1] : g_shell.cwd;
-    shell_printf("Listing directory: %s\n", path);
-    shell_print("(File system integration coming soon...)\n");
+
+    // 解析为绝对路径
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(path, abs_path);
+
+    fat32_handle_t dir;
+    if (!fat32_open(abs_path, &dir, FILE_READ)) {
+        shell_printf("ls: cannot access '%s': %s\n", path, fat32_get_error());
+        return;
+    }
+
+    if (!dir.is_directory) {
+        shell_printf("ls: '%s' is not a directory\n", path);
+        fat32_close(&dir);
+        return;
+    }
+
+    int count = 0;
+    fat32_dir_entry_t entry;
+
+    serial_puts("[LS] opening dir: ");
+    serial_puts(abs_path);
+    serial_puts("\n");
+
+    while (fat32_read_dir(&dir, &entry)) {
+        // 跳过删除项
+        if ((uint8_t)entry.name[0] == 0xE5 || entry.name[0] == 0x00)
+            continue;
+        // 跳过长文件名项
+        if (entry.attributes == ATTR_LONG_NAME)
+            continue;
+
+        // 格式化 8.3 名
+        char name[13];
+        format_83_name(entry.name, name);
+
+        // 跳过 . 和 ..
+        if (name[0] == '.' &&
+            (name[1] == '\0' || (name[1] == '.' && name[2] == '\0')))
+            continue;
+
+        if (entry.attributes & ATTR_DIRECTORY) {
+            shell_printf("  \033[1;34m%s\033[0m/    [DIR]\n", name);
+        } else if (entry.attributes & ATTR_VOLUME_ID) {
+            shell_printf("  %s    [VOL]\n", name);
+        } else {
+            // 文件大小用 KB/MB 表示
+            uint32_t sz = entry.file_size;
+            if (sz >= 1048576)
+                shell_printf("  %-13s %u.%u MB\n", name, sz / 1048576,
+                             (sz % 1048576) / 104858);
+            else if (sz >= 1024)
+                shell_printf("  %-13s %u.%u KB\n", name, sz / 1024,
+                             (sz % 1024) / 103);
+            else
+                shell_printf("  %-13s %u B\n", name, sz);
+        }
+        count++;
+    }
+
+    fat32_close(&dir);
+    shell_printf("\n  total %d entries\n", count);
 }
 
 static void builtin_cd(int argc, char** argv) {
@@ -550,6 +613,7 @@ static void builtin_cd(int argc, char** argv) {
 
     const char* target = argv[1];
 
+    // 处理 .. 特殊情况
     if (strcmp(target, "..") == 0) {
         char* last_slash = (char*)strrchr(g_shell.cwd, '/');
         if (last_slash && last_slash != g_shell.cwd) {
@@ -560,15 +624,27 @@ static void builtin_cd(int argc, char** argv) {
         return;
     }
 
-    if (target[0] == '/') {
-        strncpy(g_shell.cwd, target, SHELL_MAX_PATH - 1);
-        g_shell.cwd[SHELL_MAX_PATH - 1] = '\0';
-    } else {
-        if (strcmp(g_shell.cwd, "/") != 0) {
-            strcat(g_shell.cwd, "/");
-        }
-        strncat(g_shell.cwd, target, SHELL_MAX_PATH - strlen(g_shell.cwd) - 1);
+    // 解析绝对路径
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(target, abs_path);
+
+    // 验证目标目录存在
+    fat32_handle_t dir;
+    if (!fat32_open(abs_path, &dir, FILE_READ)) {
+        shell_printf("cd: %s: %s\n", target, fat32_get_error());
+        return;
     }
+
+    if (!dir.is_directory) {
+        shell_printf("cd: %s: Not a directory\n", target);
+        fat32_close(&dir);
+        return;
+    }
+    fat32_close(&dir);
+
+    // 更新 cwd
+    strncpy(g_shell.cwd, abs_path, SHELL_MAX_PATH - 1);
+    g_shell.cwd[SHELL_MAX_PATH - 1] = '\0';
 }
 
 static void builtin_pwd(int argc, char** argv) {
@@ -582,17 +658,63 @@ static void builtin_cat(int argc, char** argv) {
         shell_print("Usage: cat <filename>\n");
         return;
     }
-    shell_printf("Displaying: %s\n", argv[1]);
-    shell_print("(File reading coming soon...)\n");
-}
 
-static void builtin_exec(int argc, char** argv) {
-    if (argc < 2) {
-        shell_print("Usage: exec <program> [args...]\n");
+    const char* path = argv[1];
+
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(path, abs_path);
+
+    fat32_handle_t file;
+    if (!fat32_open(abs_path, &file, FILE_READ)) {
+        shell_printf("cat: %s: %s\n", path, fat32_get_error());
         return;
     }
-    shell_printf("Executing: %s\n", argv[1]);
-    shell_print("(Program execution coming soon...)\n");
+
+    if (file.is_directory) {
+        shell_printf("cat: %s: Is a directory\n", path);
+        fat32_close(&file);
+        return;
+    }
+
+    if (file.file_size == 0) {
+        fat32_close(&file);
+        return;
+    }
+
+    // 读取并输出
+    uint8_t* buf = (uint8_t*)kmalloc(file.file_size + 1);
+    if (!buf) {
+        shell_print("cat: out of memory\n");
+        fat32_close(&file);
+        return;
+    }
+
+    // 使用 fast read 一次性读取（更高效）
+    bool ok = fat32_read_all_fast(&file, buf);
+    if (!ok) {
+        // fallback: 分块读取
+        fat32_close(&file);
+        if (!fat32_open(abs_path, &file, FILE_READ)) {
+            shell_printf("cat: %s: %s\n", path, fat32_get_error());
+            kfree(buf);
+            return;
+        }
+        uint32_t total = 0;
+        while (total < file.file_size) {
+            uint32_t chunk = file.file_size - total;
+            if (chunk > 512)
+                chunk = 512;
+            if (!fat32_read(&file, buf + total, chunk))
+                break;
+            total += chunk;
+        }
+    }
+
+    buf[file.file_size] = '\0';
+    shell_print((const char*)buf);
+
+    kfree(buf);
+    fat32_close(&file);
 }
 
 static void builtin_history(int argc, char** argv) {
