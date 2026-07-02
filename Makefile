@@ -187,18 +187,41 @@ debug: mkdisk
 	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -s -S -m 1G
 
 q35: mkdisk
+	@echo "==> QEMU (Q35) with GDB server on localhost:1234"
+	@echo "==> To connect GDB, run in another terminal:"
+	@echo "     gdb -ex 'target remote localhost:1234' -ex 'symbol-file $(KERNELBUILDDIR)/kernel.elf'"
+	@echo "==> Then set breakpoints, e.g. 'break kmain' and 'continue'"
 	qemu-system-x86_64 \
- 		-M q35 \
+		-M q35 \
 		-bios OVMF.fd \
- 		-drive file=$(BUILDDIR)/disk.img,format=raw \
+		-drive file=$(BUILDDIR)/disk.img,format=raw \
 		-serial stdio \
- 		-s -S \
+		-s -S \
 		-m 1G \
 		-vga std \
 		-device e1000,netdev=net0 \
- 		-netdev user,id=net0 \
+		-netdev user,id=net0 \
 		-device AC97 \
 		-usb -device usb-tablet
+
+gdb-q35: mkdisk
+	@echo "==> Starting QEMU (Q35) in background with GDB server..."
+	@qemu-system-x86_64 \
+		-M q35 \
+		-bios OVMF.fd \
+		-drive file=$(BUILDDIR)/disk.img,format=raw \
+		-serial stdio \
+		-s -S \
+		-m 1G \
+		-vga std \
+		-device e1000,netdev=net0 \
+		-netdev user,id=net0 \
+		-device AC97 \
+		-usb -device usb-tablet &
+	@sleep 2
+	@echo "==> Launching GDB, connecting to QEMU..."
+	@gdb -ex "target remote localhost:1234" \
+	     -ex "symbol-file $(KERNELBUILDDIR)/kernel.elf" \
 
 # ============================
 # Compile Commands (clangd)
