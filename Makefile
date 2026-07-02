@@ -77,7 +77,7 @@ KERNEL_CFLAGS = -target x86_64-linux-gnu -ffreestanding -fno-builtin \
                 -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare \
                 -Wno-incompatible-library-redeclaration -I./include/zlib -Wno-pointer-to-int-cast
 
-.PHONY: all clean uefi kernel disk mkdisk run debug list-sources list-dirs mwp-tool programs compiledb
+.PHONY: all clean uefi kernel disk mkdisk run debug list-sources list-dirs compiledb
 
 # ============================
 # 默认目标
@@ -186,6 +186,20 @@ run: mkdisk
 debug: mkdisk
 	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -s -S -m 1G
 
+q35: mkdisk
+	qemu-system-x86_64 \
+ 		-M q35 \
+		-bios OVMF.fd \
+ 		-drive file=$(BUILDDIR)/disk.img,format=raw \
+		-serial stdio \
+ 		-s -S \
+		-m 1G \
+		-vga std \
+		-device e1000,netdev=net0 \
+ 		-netdev user,id=net0 \
+		-device AC97 \
+		-usb -device usb-tablet
+
 # ============================
 # Compile Commands (clangd)
 # ============================
@@ -228,31 +242,4 @@ list-dirs:
 		echo "  $$dir"; \
 	done
 
-# ============================
-# MWP Program Build
-# ============================
 
-MWP_TOOL_DIR = tools/mwp_tool
-MWP_TOOL = $(MWP_TOOL_DIR)/mwp_tool
-
-$(MWP_TOOL): $(MWP_TOOL_DIR)/mwp_tool.c
-	$(Q)echo "  BUILD       mwp_tool"
-	$(Q)gcc -Iinclude/ -o $@ $< -O2
-
-MWP_CFLAGS = -target x86_64-linux-gnu -ffreestanding -fno-builtin \
-             -fno-stack-protector -mno-red-zone -Wall -Wextra -O2 \
-             -mgeneral-regs-only -Iinclude/ -Iinclude/freestnd-c-hdrs/ \
-             -Wno-unused-variable -Wno-unused-parameter
-
-programs/%.mwp: programs/%.c $(MWP_TOOL)
-	$(Q)mkdir -p programs
-	$(Q)echo "  MWPCC       $@"
-	$(Q)$(CC) $(MWP_CFLAGS) -c $< -o programs/$*.o
-	$(Q)ld.lld --unresolved-symbols=ignore-all -T kernel/mwp.ld programs/$*.o -o programs/$*.elf
-	$(Q)$(MWP_TOOL) programs/$*.elf -o $@
-	$(Q)rm -f programs/$*.o programs/$*.elf
-
-PROGRAMS = programs/hello.mwp
-
-programs: $(MWP_TOOL) $(PROGRAMS)
-	@echo "MWP programs built successfully"
