@@ -1,15 +1,11 @@
 #include "serial.h"
 #include "idt.h"
 #include "trap.h"
+#include "gdt.h"
+#include "elfexev.h"
 
 #define SYS_WRITE   0
 #define SYS_EXIT    1
-
-// syscall编号对应的参数个数
-static const int syscall_nargs[] = {
-    3,  // SYS_WRITE: fd, buf, len
-    1,  // SYS_EXIT:  code
-};
 
 // main syscall dispatcher (called from idt_handler)
 // tf->rax: syscall number
@@ -32,7 +28,21 @@ void handle_syscall(Trapframe *tf)
         break;
     }
     case SYS_EXIT:
-        serial_puts("syscall: exit (ignored)\n");
+        // 如果从用户态调用，跳回内核退出处理函数
+        if (tf->cs == SEL_UCODE) {
+            if (g_elf_ret_rip != 0) {
+                tf->rip  = g_elf_ret_rip;
+                tf->cs   = SEL_KCODE;
+                tf->ss   = SEL_KDATA;
+                tf->rsp  = g_elf_ret_rsp;
+                tf->rflags = 0x202;
+                serial_puts("syscall: exit -> kernel\n");
+            } else {
+                serial_puts("syscall: exit (no handler, halting)\n");
+                while (1) asm("hlt");
+            }
+        }
+        // 如果从内核态调用，忽略
         ret = 0;
         break;
     default:
@@ -43,5 +53,5 @@ void handle_syscall(Trapframe *tf)
         break;
     }
 
-    tf->rax = ret;  // -> iretq时rax中即为返回值
+    tf->rax = ret;
 }

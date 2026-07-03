@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "string.h"
 #include "terminal.h"
+#include "elfexev.h"
 
 static shell_state_t g_shell;
 
@@ -204,6 +205,7 @@ static void builtin_exit(int argc, char** argv);
 static void builtin_whoami(int argc, char** argv);
 static void builtin_uname(int argc, char** argv);
 static void builtin_date(int argc, char** argv);
+static void builtin_exec(int argc, char** argv);
 
 void shell_init(void) {
     memset(&g_shell, 0, sizeof(g_shell));
@@ -225,6 +227,7 @@ void shell_init(void) {
     shell_register_command("touch", "Create empty file", builtin_touch);
     shell_register_command("mkdir", "Create directory", builtin_mkdir);
     shell_register_command("bincat", "Hex dump file contents", builtin_bincat);
+    shell_register_command("exec", "Execute ELF file", builtin_exec);
     shell_register_command("history", "Show command history", builtin_history);
     shell_register_command("exit", "Exit the shell", builtin_exit);
     shell_register_command("whoami", "Show current user", builtin_whoami);
@@ -908,4 +911,29 @@ static void builtin_date(int argc, char** argv) {
     (void)argc;
     (void)argv;
     shell_print("Date/Time: (RTC integration coming soon...)\n");
+}
+
+static void builtin_exec(int argc, char** argv) {
+    if (argc < 2) {
+        shell_print("Usage: exec <elf-file>\n");
+        return;
+    }
+
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(argv[1], abs_path);
+
+    shell_printf("exec: loading '%s' ...\n", abs_path);
+    {
+        char dbgbuf[256];
+        snprintf(dbgbuf, sizeof(dbgbuf), "exec: loading '%s'\n", abs_path);
+        serial_puts(dbgbuf);
+    }
+
+    int ret = elfexec(NULL, abs_path, NULL, NULL);
+    if (ret != 0) {
+        shell_printf("exec: failed to execute '%s'\n", argv[1]);
+        char dbgbuf[256];
+        snprintf(dbgbuf, sizeof(dbgbuf), "exec: failed to execute '%s'\n", argv[1]);
+        serial_puts(dbgbuf);
+    }
 }

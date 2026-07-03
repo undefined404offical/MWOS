@@ -34,6 +34,7 @@ SRCDIR = .
 BOOTDIR = $(SRCDIR)/boot
 EFIDIR = $(BOOTDIR)
 KERNELDIR = $(SRCDIR)/kernel
+PROGRAMSDIR = $(SRCDIR)/programs
 BUILDDIR ?= $(SRCDIR)/build
 EFIBUILDDIR = $(BUILDDIR)/efi
 KERNELBUILDDIR = $(BUILDDIR)/kernel
@@ -77,13 +78,13 @@ KERNEL_CFLAGS = -target x86_64-linux-gnu -ffreestanding -fno-builtin \
                 -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare \
                 -Wno-incompatible-library-redeclaration -I./include/zlib -Wno-pointer-to-int-cast
 
-.PHONY: all clean uefi kernel disk mkdisk run debug list-sources list-dirs compiledb
+.PHONY: all clean uefi kernel disk mkdisk run debug list-sources list-dirs compiledb programs
 
 # ============================
 # 默认目标
 # ============================
 
-all: uefi kernel disk mkdisk compiledb
+all: uefi kernel programs disk mkdisk compiledb
 
 # ============================
 # UEFI 构建
@@ -136,6 +137,15 @@ $(KERNELBUILDDIR)/%.o: $(KERNELDIR)/%.asm
 	$(Q)$(AS) -f elf64 -o $@ $<
 
 # ============================
+# User Programs
+# ============================
+
+.PHONY: programs
+
+programs:
+	$(Q)$(MAKE) --no-print-directory -C $(PROGRAMSDIR) PROGRAMS_BUILDDIR=$(abspath $(BUILDDIR))
+
+# ============================
 # Kernel Image (仅内核)
 # ============================
 
@@ -157,7 +167,7 @@ $(BUILDDIR)/kernel.img: uefi kernel
 
 mkdisk: $(BUILDDIR)/disk.img
 
-$(BUILDDIR)/disk.img: uefi kernel
+$(BUILDDIR)/disk.img: uefi kernel programs
 	$(Q)echo "  MKDISK      $(BUILDDIR)/disk.img (1GB, ESP+FAT32 + EXT2)"
 	$(Q)mkdir -p $(BUILDDIR)
 	$(Q)dd if=/dev/zero of=$@ bs=1M count=1024 2>/dev/null
@@ -179,6 +189,7 @@ $(BUILDDIR)/disk.img: uefi kernel
 	$(Q)dd if=/dev/zero of=$(BUILDDIR)/root.img bs=512 count=1964032 2>/dev/null
 	$(Q)mkdir -p $(BUILDDIR)/rootfs_staging
 	$(Q)cp $(KERNELBUILDDIR)/kernel.bin $(BUILDDIR)/rootfs_staging/kernel.bin
+	$(Q)cp -r $(BUILDDIR)/programs/*.elf $(BUILDDIR)/rootfs_staging/ 2>/dev/null; ls $(BUILDDIR)/rootfs_staging/ 2>/dev/null || true
 	$(Q)if [ -d assets/rootfs ]; then \
 		cp -r assets/rootfs/* $(BUILDDIR)/rootfs_staging/ 2>/dev/null || true; \
 	fi
@@ -256,6 +267,7 @@ _compile_for_bear:
 # ============================
 
 clean:
+	$(Q)$(MAKE) --no-print-directory -C $(PROGRAMSDIR) clean PROGRAMS_BUILDDIR=$(abspath $(BUILDDIR)) 2>/dev/null || true
 	rm -rf $(BUILDDIR)
 
 # ============================

@@ -21,12 +21,10 @@
 #include "ttf.h"
 #include "ui/microui.h"
 #include "vmm.h"
+#include "elfexev.h"
 #include "wm.h"
 
-// 来自链接器脚本的符号
-extern uint8_t usertest_start;
-extern uint8_t usertest_end;
-extern uint8_t usertest_size;
+
 
 TTF_Font* g_font = NULL;
 
@@ -279,55 +277,32 @@ kmain(void* params) {
         shell_init();
         shell_set_output(terminal_output);
         shell_print_prompt();
+
+        /* 注册 elf 退出回调，让用户程序结束后恢复 shell 提示符 */
+        g_elf_on_exit = shell_print_prompt;
         wm_redraw();
         graphics_present();
     } else {
         kerror("TERM", "Failed to create terminal window");
     }
 
-    // 用户态测试: 进入ring 3执行并向串口打印消息
-    serial_puts("--- entering ring 3 test ---\n");
-
-    // 初始化tss并设置内核栈
+    // 初始化 TSS（供后续 elfexec 使用）
     tss_init();
-    // 用当前rsp作为内核栈
     uint64_t kernel_rsp;
     asm volatile("mov %%rsp, %0" : "=r"(kernel_rsp));
     tss_set_stack(kernel_rsp);
 
-    // 分配物理页并复制用户测试代码
-    uint64_t user_code_phys = (uint64_t)pmm_alloc_zpage();
-    uint32_t code_len = (uint32_t)(uint64_t)&usertest_size;
-    if (user_code_phys) {
-        memcpy((void*)user_code_phys, &usertest_start, code_len);
-    }
-
-    // 复制用户测试代码到identity-mapped区域(0x400000)并标记为user
-    uint64_t user_code_virt = 0x400000;
-    memcpy((void*)user_code_virt, &usertest_start, code_len);
-    vmm_make_user(kernel_pml4, user_code_virt);
-
-    // 分配用户栈并标记为user(0x500000处)
-    uint64_t user_stack_phys = (uint64_t)pmm_alloc_zpage();
-    uint64_t user_stack_top = 0x501000;
-    memcpy((void*)(user_stack_top - 0x1000), (void*)user_stack_phys, 0x1000);
-    vmm_make_user(kernel_pml4, user_stack_top - 0x1000);
-
-    // 进入用户态
-    enter_usermode(user_code_virt, user_stack_top);
-
-    serial_puts("--- back from ring 3 test ---\n");
-
-    // 开启调度器
-    kinfo("SCHED", "Starting scheduler");
-    scheduler_start();
-
-    // 主循环
     kinfo("SYS", "MWOS initialization complete. Entering main loop.");
     for (;;) {
+        /* 先清除上一轮的鼠标光标，再重绘窗口内容 */
+        if (g_old_mouse_x != -1)
+            mouse_restore_bg(g_old_mouse_x, g_old_mouse_y);
         wm_redraw_dirty();
+        /* 保存干净背景并绘制新光标 */
         mouse_save_bg(mouse_x, mouse_y);
         mouse_draw(mouse_x, mouse_y);
+        g_old_mouse_x = mouse_x;
+        g_old_mouse_y = mouse_y;
         asm volatile("hlt");
     }
 }
