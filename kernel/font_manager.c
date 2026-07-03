@@ -1,8 +1,7 @@
-#include "font_manager.h"
 #include "memory.h"
-#include "string.h"
+#include "font_manager.h"
 #include "ttf.h"
-#include "drivers/fs/fat32.h"
+#include "string.h"
 
 static font_manager_t g_font_manager;
 

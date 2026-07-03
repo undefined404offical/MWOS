@@ -53,10 +53,36 @@ static void vmm_map(pt_entry_t *pml4, uint64_t virt, uint64_t phys, uint64_t fla
     asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-// 提供给外部用的“内核映射”封装（U/S=0）
+// mark an existing page as user-accessible (or-in USER bit)
+void vmm_make_user(pt_entry_t *pml4, uint64_t virt)
+{
+    pt_entry_t *pdpt = (pt_entry_t*)(pml4[PML4_IDX(virt)] & PTE_ADDR_MASK);
+    if (!pdpt) return;
+    pml4[PML4_IDX(virt)] |= PTE_USER;
+
+    pt_entry_t *pd = (pt_entry_t*)(pdpt[PDPT_IDX(virt)] & PTE_ADDR_MASK);
+    if (!pd) return;
+    pdpt[PDPT_IDX(virt)] |= PTE_USER;
+
+    pt_entry_t *pt = (pt_entry_t*)(pd[PD_IDX(virt)] & PTE_ADDR_MASK);
+    if (!pt) return;
+    pd[PD_IDX(virt)] |= PTE_USER;
+
+    pt[PT_IDX(virt)] |= PTE_USER;
+    asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+}
+
+// kernel mapping (U/S=0)
 void vmm_map_kernel(pt_entry_t *pml4, uint64_t virt, uint64_t phys)
 {
-    uint64_t flags = PTE_WRITABLE; // 内核态 R/W，U/S=0
+    uint64_t flags = PTE_WRITABLE;
+    vmm_map(pml4, virt, phys, flags);
+}
+
+// user mapping (U/S=1, writable)
+void vmm_map_user(pt_entry_t *pml4, uint64_t virt, uint64_t phys)
+{
+    uint64_t flags = PTE_WRITABLE | PTE_USER;
     vmm_map(pml4, virt, phys, flags);
 }
 

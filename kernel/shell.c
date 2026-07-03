@@ -1,5 +1,5 @@
 #include "shell.h"
-#include "drivers/fs/fat32.h"
+#include "drivers/fs/vfs.h"
 #include "klog.h"
 #include "memory.h"
 #include "serial.h"
@@ -196,6 +196,9 @@ static void builtin_ls(int argc, char** argv);
 static void builtin_cd(int argc, char** argv);
 static void builtin_pwd(int argc, char** argv);
 static void builtin_cat(int argc, char** argv);
+static void builtin_touch(int argc, char** argv);
+static void builtin_mkdir(int argc, char** argv);
+static void builtin_bincat(int argc, char** argv);
 static void builtin_history(int argc, char** argv);
 static void builtin_exit(int argc, char** argv);
 static void builtin_whoami(int argc, char** argv);
@@ -219,6 +222,9 @@ void shell_init(void) {
     shell_register_command("cd", "Change current directory", builtin_cd);
     shell_register_command("pwd", "Print working directory", builtin_pwd);
     shell_register_command("cat", "Display file contents", builtin_cat);
+    shell_register_command("touch", "Create empty file", builtin_touch);
+    shell_register_command("mkdir", "Create directory", builtin_mkdir);
+    shell_register_command("bincat", "Hex dump file contents", builtin_bincat);
     shell_register_command("history", "Show command history", builtin_history);
     shell_register_command("exit", "Exit the shell", builtin_exit);
     shell_register_command("whoami", "Show current user", builtin_whoami);
@@ -546,62 +552,44 @@ static void builtin_ls(int argc, char** argv) {
     char abs_path[SHELL_MAX_PATH];
     resolve_path(path, abs_path);
 
-    fat32_handle_t dir;
-    if (!fat32_open(abs_path, &dir, FILE_READ)) {
-        shell_printf("ls: cannot access '%s': %s\n", path, fat32_get_error());
+    vfs_file_t dir;
+    if (!vfs_open(abs_path, &dir, VFS_READ)) {
+        shell_printf("ls: cannot access '%s': %s\n", path, vfs_get_error());
         return;
     }
 
     if (!dir.is_directory) {
         shell_printf("ls: '%s' is not a directory\n", path);
-        fat32_close(&dir);
+        vfs_close(&dir);
         return;
     }
 
     int count = 0;
-    fat32_dir_entry_t entry;
+    vfs_dirent_t entry;
 
-    serial_puts("[LS] opening dir: ");
-    serial_puts(abs_path);
-    serial_puts("\n");
-
-    while (fat32_read_dir(&dir, &entry)) {
-        // 跳过删除项
-        if ((uint8_t)entry.name[0] == 0xE5 || entry.name[0] == 0x00)
-            continue;
-        // 跳过长文件名项
-        if (entry.attributes == ATTR_LONG_NAME)
-            continue;
-
-        // 格式化 8.3 名
-        char name[13];
-        format_83_name(entry.name, name);
-
+    while (vfs_read_dir(&dir, &entry)) {
         // 跳过 . 和 ..
-        if (name[0] == '.' &&
-            (name[1] == '\0' || (name[1] == '.' && name[2] == '\0')))
+        if (strcmp(entry.name, ".") == 0 || strcmp(entry.name, "..") == 0)
             continue;
 
-        if (entry.attributes & ATTR_DIRECTORY) {
-            shell_printf("  \033[1;34m%s\033[0m/    [DIR]\n", name);
-        } else if (entry.attributes & ATTR_VOLUME_ID) {
-            shell_printf("  %s    [VOL]\n", name);
+        if (entry.is_directory) {
+            shell_printf("  \033[1;34m%s\033[0m/    [DIR]\n", entry.name);
         } else {
             // 文件大小用 KB/MB 表示
-            uint32_t sz = entry.file_size;
+            uint32_t sz = entry.size;
             if (sz >= 1048576)
-                shell_printf("  %-13s %u.%u MB\n", name, sz / 1048576,
+                shell_printf("  %-13s %u.%u MB\n", entry.name, sz / 1048576,
                              (sz % 1048576) / 104858);
             else if (sz >= 1024)
-                shell_printf("  %-13s %u.%u KB\n", name, sz / 1024,
+                shell_printf("  %-13s %u.%u KB\n", entry.name, sz / 1024,
                              (sz % 1024) / 103);
             else
-                shell_printf("  %-13s %u B\n", name, sz);
+                shell_printf("  %-13s %u B\n", entry.name, sz);
         }
         count++;
     }
 
-    fat32_close(&dir);
+    vfs_close(&dir);
     shell_printf("\n  total %d entries\n", count);
 }
 
@@ -629,18 +617,18 @@ static void builtin_cd(int argc, char** argv) {
     resolve_path(target, abs_path);
 
     // 验证目标目录存在
-    fat32_handle_t dir;
-    if (!fat32_open(abs_path, &dir, FILE_READ)) {
-        shell_printf("cd: %s: %s\n", target, fat32_get_error());
+    vfs_file_t dir;
+    if (!vfs_open(abs_path, &dir, VFS_READ)) {
+        shell_printf("cd: %s: %s\n", target, vfs_get_error());
         return;
     }
 
     if (!dir.is_directory) {
         shell_printf("cd: %s: Not a directory\n", target);
-        fat32_close(&dir);
+        vfs_close(&dir);
         return;
     }
-    fat32_close(&dir);
+    vfs_close(&dir);
 
     // 更新 cwd
     strncpy(g_shell.cwd, abs_path, SHELL_MAX_PATH - 1);
@@ -664,20 +652,21 @@ static void builtin_cat(int argc, char** argv) {
     char abs_path[SHELL_MAX_PATH];
     resolve_path(path, abs_path);
 
-    fat32_handle_t file;
-    if (!fat32_open(abs_path, &file, FILE_READ)) {
-        shell_printf("cat: %s: %s\n", path, fat32_get_error());
+    vfs_file_t file;
+    if (!vfs_open(abs_path, &file, VFS_READ)) {
+        shell_printf("cat: %s: %s\n", path, vfs_get_error());
         return;
     }
 
     if (file.is_directory) {
         shell_printf("cat: %s: Is a directory\n", path);
-        fat32_close(&file);
+        vfs_close(&file);
         return;
     }
 
     if (file.file_size == 0) {
-        fat32_close(&file);
+        shell_print("(empty)\n");
+        vfs_close(&file);
         return;
     }
 
@@ -685,36 +674,175 @@ static void builtin_cat(int argc, char** argv) {
     uint8_t* buf = (uint8_t*)kmalloc(file.file_size + 1);
     if (!buf) {
         shell_print("cat: out of memory\n");
-        fat32_close(&file);
+        vfs_close(&file);
         return;
     }
 
-    // 使用 fast read 一次性读取（更高效）
-    bool ok = fat32_read_all_fast(&file, buf);
-    if (!ok) {
-        // fallback: 分块读取
-        fat32_close(&file);
-        if (!fat32_open(abs_path, &file, FILE_READ)) {
-            shell_printf("cat: %s: %s\n", path, fat32_get_error());
-            kfree(buf);
-            return;
+    // 分块读取
+    uint32_t total = 0;
+    while (total < file.file_size) {
+        uint32_t chunk = file.file_size - total;
+        if (chunk > 512)
+            chunk = 512;
+        uint32_t bytes_read = 0;
+        if (!vfs_read(&file, buf + total, chunk, &bytes_read)) {
+            break;
         }
-        uint32_t total = 0;
-        while (total < file.file_size) {
-            uint32_t chunk = file.file_size - total;
-            if (chunk > 512)
-                chunk = 512;
-            if (!fat32_read(&file, buf + total, chunk))
-                break;
-            total += chunk;
-        }
+        if (bytes_read == 0) break;
+        total += bytes_read;
     }
 
-    buf[file.file_size] = '\0';
+    buf[total] = '\0';
+
+    // 确保输出以换行结尾
+    bool has_trailing_newline = (total > 0 && buf[total - 1] == '\n');
+
     shell_print((const char*)buf);
 
+    if (!has_trailing_newline) {
+        shell_print("\n");
+    }
+
     kfree(buf);
-    fat32_close(&file);
+    vfs_close(&file);
+}
+
+static void builtin_touch(int argc, char** argv) {
+    if (argc < 2) {
+        shell_print("Usage: touch <filename>\n");
+        return;
+    }
+
+    const char* path = argv[1];
+
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(path, abs_path);
+
+    // 检查文件是否已存在
+    if (vfs_file_exists(abs_path)) {
+        return; // 已存在，touch 传统行为是更新时间戳，这里简化处理
+    }
+
+    if (!vfs_create_file(abs_path)) {
+        shell_printf("touch: cannot create '%s': %s\n", path, vfs_get_error());
+    }
+}
+
+static void builtin_mkdir(int argc, char** argv) {
+    if (argc < 2) {
+        shell_print("Usage: mkdir <directory>\n");
+        return;
+    }
+
+    const char* path = argv[1];
+
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(path, abs_path);
+
+    if (!vfs_create_dir(abs_path)) {
+        shell_printf("mkdir: cannot create directory '%s': %s\n", path, vfs_get_error());
+    }
+}
+
+static void builtin_bincat(int argc, char** argv) {
+    if (argc < 2) {
+        shell_print("Usage: bincat <filename>\n");
+        return;
+    }
+
+    const char* path = argv[1];
+
+    char abs_path[SHELL_MAX_PATH];
+    resolve_path(path, abs_path);
+
+    vfs_file_t file;
+    if (!vfs_open(abs_path, &file, VFS_READ)) {
+        shell_printf("bincat: %s: %s\n", path, vfs_get_error());
+        return;
+    }
+
+    if (file.is_directory) {
+        shell_printf("bincat: %s: Is a directory\n", path);
+        vfs_close(&file);
+        return;
+    }
+
+    if (file.file_size == 0) {
+        shell_print("bincat: (empty file)\n");
+        vfs_close(&file);
+        return;
+    }
+
+    uint32_t fsize = file.file_size;
+    uint8_t* buf = (uint8_t*)kmalloc(fsize);
+    if (!buf) {
+        shell_print("bincat: out of memory\n");
+        vfs_close(&file);
+        return;
+    }
+
+    // 分块读取
+    uint32_t total = 0;
+    while (total < fsize) {
+        uint32_t chunk = fsize - total;
+        if (chunk > 512) chunk = 512;
+        uint32_t bytes_read = 0;
+        if (!vfs_read(&file, buf + total, chunk, &bytes_read))
+            break;
+        if (bytes_read == 0) break;
+        total += bytes_read;
+    }
+    vfs_close(&file);
+
+    // 十六进制输出
+    uint32_t size = fsize;
+    shell_printf("Hex dump of '%s' (%u bytes):\n", path, size);
+    shell_print("  Offset      00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII\n");
+    shell_print("  --------    -----------------------------------------------  ----------------\n");
+
+    for (uint32_t offset = 0; offset < size; offset += 16) {
+        // 偏移
+        char off_str[12];
+        sprintf(off_str, "  %08X", offset);
+        shell_print(off_str);
+        shell_print("    ");
+
+        // 十六进制区域
+        for (int i = 0; i < 16; i++) {
+            if (offset + i < size) {
+                char hex_byte[3];
+                sprintf(hex_byte, "%02X", buf[offset + i]);
+                shell_print(hex_byte);
+            } else {
+                shell_print("  ");
+            }
+
+            if (i == 7)
+                shell_print("  ");
+            else
+                shell_print(" ");
+        }
+
+        shell_print(" ");
+
+        // ASCII 区域
+        for (int i = 0; i < 16; i++) {
+            if (offset + i < size) {
+                char c = (char)buf[offset + i];
+                if (c >= 32 && c <= 126) {
+                    char s[2] = {c, '\0'};
+                    shell_print(s);
+                } else {
+                    shell_print(".");
+                }
+            }
+        }
+
+        shell_print("\n");
+    }
+
+    shell_printf("\n  %u bytes\n", size);
+    kfree(buf);
 }
 
 static void builtin_history(int argc, char** argv) {

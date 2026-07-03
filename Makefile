@@ -158,23 +158,34 @@ $(BUILDDIR)/kernel.img: uefi kernel
 mkdisk: $(BUILDDIR)/disk.img
 
 $(BUILDDIR)/disk.img: uefi kernel
-	$(Q)echo "  MKDISK      $(BUILDDIR)/disk.img (1GB)"
-	$(Q)mkdir -p $(BUILDDIR)/EFI/BOOT
-	$(Q)dd if=/dev/zero of=$(BUILDDIR)/disk.img bs=1M count=1024 2>/dev/null
-	$(Q)mkfs.fat -F 32 $(BUILDDIR)/disk.img >/dev/null 2>&1
-	$(Q)mmd -i $(BUILDDIR)/disk.img ::EFI
-	$(Q)mmd -i $(BUILDDIR)/disk.img ::EFI/BOOT
-	$(Q)mcopy -i $(BUILDDIR)/disk.img $(EFIBUILDDIR)/bootx64.efi ::EFI/BOOT/bootx64.efi
-	$(Q)mcopy -i $(BUILDDIR)/disk.img $(KERNELBUILDDIR)/kernel.bin ::kernel.bin
+	$(Q)echo "  MKDISK      $(BUILDDIR)/disk.img (1GB, ESP+FAT32 + EXT2)"
+	$(Q)mkdir -p $(BUILDDIR)
+	$(Q)dd if=/dev/zero of=$@ bs=1M count=1024 2>/dev/null
+	@# 创建 MBR 分区表：P1=FAT32(ESP) 64MB, P2=EXT2 剩余空间
+	$(Q)echo "2048,131072,0x0C,*"  > $(BUILDDIR)/partitions.sfdisk
+	$(Q)echo "133120,,0x83"       >> $(BUILDDIR)/partitions.sfdisk
+	$(Q)sfdisk $@ < $(BUILDDIR)/partitions.sfdisk >/dev/null 2>&1
+	$(Q)rm -f $(BUILDDIR)/partitions.sfdisk
+	@# 创建 FAT32 ESP 分区并写入 bootloader
+	$(Q)dd if=/dev/zero of=$(BUILDDIR)/esp.img bs=512 count=131072 2>/dev/null
+	$(Q)mkfs.fat -F 32 $(BUILDDIR)/esp.img >/dev/null 2>&1
+	$(Q)mmd -i $(BUILDDIR)/esp.img ::EFI
+	$(Q)mmd -i $(BUILDDIR)/esp.img ::EFI/BOOT
+	$(Q)mcopy -i $(BUILDDIR)/esp.img $(EFIBUILDDIR)/bootx64.efi ::EFI/BOOT/bootx64.efi
+	$(Q)mcopy -i $(BUILDDIR)/esp.img $(KERNELBUILDDIR)/kernel.bin ::kernel.bin
+	$(Q)dd if=$(BUILDDIR)/esp.img of=$@ bs=512 seek=2048 conv=notrunc 2>/dev/null
+	$(Q)rm -f $(BUILDDIR)/esp.img
+	@# 创建 EXT2 root 分区（预填充 kernel.bin + rootfs）
+	$(Q)dd if=/dev/zero of=$(BUILDDIR)/root.img bs=512 count=1964032 2>/dev/null
+	$(Q)mkdir -p $(BUILDDIR)/rootfs_staging
+	$(Q)cp $(KERNELBUILDDIR)/kernel.bin $(BUILDDIR)/rootfs_staging/kernel.bin
 	$(Q)if [ -d assets/rootfs ]; then \
-		echo "  PACKING     assets/rootfs -> disk.img"; \
-		(cd assets/rootfs && find . -type d | sed 's|^\./||' | grep -v '^\.$$' | sort | while read dir; do \
-			mmd -i ../../$(BUILDDIR)/disk.img ::"$$dir" 2>/dev/null || true; \
-		done && find . -type f | sed 's|^\./||' | while read file; do \
-			mcopy -i ../../$(BUILDDIR)/disk.img "$$file" ::"$$file" 2>/dev/null || echo "  WARN: failed to copy $$file"; \
-		done); \
+		cp -r assets/rootfs/* $(BUILDDIR)/rootfs_staging/ 2>/dev/null || true; \
 	fi
-	$(Q)echo "  DONE        disk.img created"
+	$(Q)mkfs.ext2 -F -d $(BUILDDIR)/rootfs_staging $(BUILDDIR)/root.img >/dev/null 2>&1
+	$(Q)dd if=$(BUILDDIR)/root.img of=$@ bs=512 seek=133120 conv=notrunc 2>/dev/null
+	$(Q)rm -rf $(BUILDDIR)/root.img $(BUILDDIR)/rootfs_staging
+	$(Q)echo "  DONE        disk.img created (ESP @ LBA 2048, EXT2 @ LBA 133120)"
 
 # ============================
 # Run & Debug
@@ -183,18 +194,22 @@ $(BUILDDIR)/disk.img: uefi kernel
 run: mkdisk
 	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -m 1G
 
+# 高半区偏移量 = 0xFFFFFFFF80000000 (KERNEL_VIRT_BASE) - 0x100000 (kernel phys load addr)
+HIGH_HALF_OFFSET := 0xFFFFFFFF7FF00000
+
 debug: mkdisk
+	@echo "==> QEMU with GDB server on localhost:1234"
+	@echo "==> Connect GDB: gdb -x scripts/gdb_highhalf.gdb"
 	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -s -S -m 1G
 
 q35: mkdisk
 	@echo "==> QEMU (Q35) with GDB server on localhost:1234"
-	@echo "==> To connect GDB, run in another terminal:"
-	@echo "     gdb -ex 'target remote localhost:1234' -ex 'symbol-file $(KERNELBUILDDIR)/kernel.elf'"
-	@echo "==> Then set breakpoints, e.g. 'break kmain' and 'continue'"
+	@echo "==> Connect GDB: gdb -x scripts/gdb_highhalf.gdb"
+	@echo "     (symbols auto-loaded with high-half offset)"
 	qemu-system-x86_64 \
 		-M q35 \
 		-bios OVMF.fd \
-		-drive file=$(BUILDDIR)/disk.img,format=raw \
+		-drive file=$(BUILDDIR)/disk.img,format=raw,if=ide-hd \
 		-serial stdio \
 		-s -S \
 		-m 1G \
@@ -219,9 +234,8 @@ gdb-q35: mkdisk
 		-device AC97 \
 		-usb -device usb-tablet &
 	@sleep 2
-	@echo "==> Launching GDB, connecting to QEMU..."
-	@gdb -ex "target remote localhost:1234" \
-	     -ex "symbol-file $(KERNELBUILDDIR)/kernel.elf" \
+	@echo "==> Launching GDB (high-half symbols)..."
+	@gdb -x scripts/gdb_highhalf.gdb
 
 # ============================
 # Compile Commands (clangd)

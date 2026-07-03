@@ -413,7 +413,7 @@ EFI_STATUS boot_kernel(void) {
             print_string(mode_num);
             print_string(L"\r\n");
 
-// 优先选择 1920x1080
+// 1920x1080
 #ifdef COMPATIBLE_MODE
             if (!found_target && mode_info->HorizontalResolution == 1920 &&
                 mode_info->VerticalResolution == 1080) {
@@ -609,17 +609,7 @@ EFI_STATUS boot_kernel(void) {
     // 退出 BootServices
     // 如果因为 map 改变导致 EFI_INVALID_PARAMETER，就重试一次
     while (1) {
-        status = gST->BootServices->ExitBootServices(gImageHandle, map_key);
-        if (status == EFI_SUCCESS) {
-            break;
-        }
-
-        if (status != EFI_INVALID_PARAMETER) {
-            print_error(L"[X] ExitBootServices failed", status);
-            return status;
-        }
-
-        // 需要重取一次 memory map + map_key
+        // 需要取一次 memory map + map_key
         print_string(L"[!] ExitBootServices invalid parameter, retry\r\n");
 
         memory_map_size = 0;
@@ -631,12 +621,22 @@ EFI_STATUS boot_kernel(void) {
             return status;
         }
 
-        // 此处为了简单，假设原来的 memory_map buffer 足够大（前面多给了一点）
+        // 假设原来的 memory_map buffer 足够大（前面多给了一点）
         status = gST->BootServices->GetMemoryMap(&memory_map_size, memory_map,
                                                  &map_key, &descriptor_size,
                                                  &descriptor_version);
         if (EFI_ERROR(status)) {
             print_error(L"[X] GetMemoryMap (retry)", status);
+            return status;
+        }
+
+        status = gST->BootServices->ExitBootServices(gImageHandle, map_key);
+        if (status == EFI_SUCCESS) {
+            break;
+        }
+
+        if (status != EFI_INVALID_PARAMETER) {
+            print_error(L"[X] ExitBootServices failed", status);
             return status;
         }
     }

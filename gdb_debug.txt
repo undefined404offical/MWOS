@@ -1,0 +1,20 @@
+# GDB commands for debugging MWOS kernel
+# The kernel is loaded at physical 0x100000, but runs at high-half 0xFFFFFFFF80000000
+# We use add-symbol-file to load symbols with the high-half offset
+
+symbol-file /home/wsc/文档/MWOS/build/kernel/kernel.elf
+target remote :1234
+
+# Set up display
+display/8gx $rsp
+display/3i $pc
+
+# Wait a moment for OVMF to start booting
+echo "Connected. Waiting for bootloader to load kernel...\n"
+
+# Set a breakpoint at kmain (physical address)
+# The kernel is loaded at 0x100000, kmain is at some offset
+break *0x100000
+
+# Also set breakpoint at the ring 3 test code in kmain
+echo "Type 'continue' to start execution\n"

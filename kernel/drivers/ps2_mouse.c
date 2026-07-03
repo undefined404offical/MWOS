@@ -91,33 +91,6 @@ void mouse_handler(interrupt_frame_t *frame) {
         // PS/2 的 Y 是向上为正，若你的上层期望 y_rel 向上为正，保留；否则取反
         // 你原来 on_mouse_update 用的是 mouse_y -= y_rel，所以保持一致即可
 
-        // 检查按键边沿（可选：用于调试）
-        static uint8_t prev_left = 0;
-        static uint8_t prev_right = 0;
-        static uint8_t prev_middle = 0;
-
-        if (left_mask != prev_left) {
-            if (left_mask)
-                serial_puts("MOUSE: left down\n");
-            else
-                serial_puts("MOUSE: left up\n");
-            prev_left = left_mask;
-        }
-        if (right_mask != prev_right) {
-            if (right_mask)
-                serial_puts("MOUSE: right down\n");
-            else
-                serial_puts("MOUSE: right up\n");
-            prev_right = right_mask;
-        }
-        if (middle_mask != prev_middle) {
-            if (middle_mask)
-                serial_puts("MOUSE: middle down\n");
-            else
-                serial_puts("MOUSE: middle up\n");
-            prev_middle = middle_mask;
-        }
-
         // 更新全局状态（保持兼容你的其它接口）
         current_mouse.left_button   = left_mask;
         current_mouse.right_button  = right_mask;

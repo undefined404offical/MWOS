@@ -38,6 +38,12 @@ static void print_reg(const char *name, uint64_t val)
 
 void idt_handler(Trapframe *tf)
 {
+    // syscall gets special treatment (no eoi, no user print)
+    if (tf->int_no == T_SYSCALL) {
+        handle_syscall(tf);
+        return;
+    }
+
     interrupt_handler_t handler = interrupt_handlers[tf->int_no];
 
     if (handler)
@@ -121,8 +127,12 @@ void idt_init(void)
 {
     for (int i = 0; i < 256; i++)
     {
-        // 0x8E: P=1, DPL=0, Type=1110 (64-bit interrupt gate)
-        idt_set_gate(i, isr_stub_table[i], 0x8E);
+        // 0x8E: P=1, DPL=0, gate=1110 (64-bit interrupt gate)
+        uint8_t attr = 0x8E;
+        // syscall vector (48) use DPL=3 so ring 3 can call it
+        if (i == T_SYSCALL)
+            attr = 0xEE;  // P=1, DPL=3, gate=1110
+        idt_set_gate(i, isr_stub_table[i], attr);
     }
 
     idtr.limit = sizeof(idt) - 1;

@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include "trap.h"
+
+void handle_syscall(Trapframe *tf);
 // ----------------- trap常量 -----------------
 
 #define T_DIVIDE     0

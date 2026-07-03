@@ -195,39 +195,15 @@ static void term_draw(wm_window_t* win) {
 
     int y = TERM_MARGIN_Y;
 
-    serial_puts("[TERM_DBG] term_draw: line_count=");
-    serial_putdec32(t->line_count);
-    serial_puts(" scroll_offset=");
-    serial_putdec32(t->scroll_offset);
-    serial_puts(" start=");
-    serial_putdec32(start);
-    serial_puts(" max_visible=");
-    serial_putdec32(max_visible);
-    serial_puts(" buf_height=");
-    serial_putdec32(win->buf_height);
-    serial_puts("\n");
-
     for (int i = start;
          i < start + max_visible && i < t->line_count && y < content_h; i++) {
         ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, y, TERM_FONT_SIZE,
                                t->colors[i], win->buffer, win->buf_width,
                                win->buf_height, t->lines[i]);
-        serial_puts("[TERM_DBG] hist line y=");
-        serial_putdec32(y);
-        serial_puts(" text='");
-        serial_puts(t->lines[i]);
-        serial_puts("'\n");
         y += TERM_LINE_HEIGHT;
     }
 
     if (t->line_buffer_len > 0 && y < content_h) {
-        serial_puts("[TERM_DBG] line_buffer y=");
-        serial_putdec32(y);
-        serial_puts(" len=");
-        serial_putdec32(t->line_buffer_len);
-        serial_puts(" text='");
-        serial_puts(t->line_buffer);
-        serial_puts("'\n");
         ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, y, TERM_FONT_SIZE,
                                t->line_buffer_color, win->buffer,
                                win->buf_width, win->buf_height, t->line_buffer);
@@ -313,20 +289,9 @@ void terminal_output(const char* str) {
             p++;
         } else if (*p == '\b') {
             if (t->line_buffer_len > 0) {
-                serial_puts("[TERM_DBG] backspace on line_buffer, old_len=");
-                serial_putdec32(t->line_buffer_len);
-                serial_puts(" old_text='");
-                serial_puts(t->line_buffer);
-                serial_puts("'\n");
                 t->line_buffer_len--;
                 t->line_buffer[t->line_buffer_len] = '\0';
-                serial_puts("[TERM_DBG] backspace result: new_len=");
-                serial_putdec32(t->line_buffer_len);
-                serial_puts(" new_text='");
-                serial_puts(t->line_buffer);
-                serial_puts("'\n");
             } else {
-                serial_puts("[TERM_DBG] backspace on history lines\n");
                 term_backspace();
                 had_full_event = true;
             }
@@ -358,36 +323,6 @@ void terminal_output(const char* str) {
                 visible_history = max_visible;
             int input_y = TERM_MARGIN_Y + visible_history * TERM_LINE_HEIGHT;
 
-            serial_puts("[COORD] incremental: line_count=");
-            serial_putdec32(t->line_count);
-            serial_puts(" max_visible=");
-            serial_putdec32(max_visible);
-            serial_puts(" visible_history=");
-            serial_putdec32(visible_history);
-            serial_puts(" input_y=");
-            serial_putdec32(input_y);
-            serial_puts(" TERM_MARGIN_X=");
-            serial_putdec32(TERM_MARGIN_X);
-            serial_puts(" TERM_MARGIN_Y=");
-            serial_putdec32(TERM_MARGIN_Y);
-            serial_puts(" buf_w=");
-            serial_putdec32(win->buf_width);
-            serial_puts(" buf_h=");
-            serial_putdec32(win->buf_height);
-            serial_puts("\n");
-            serial_puts("[COORD] incremental text: len=");
-            serial_putdec32(t->line_buffer_len);
-            serial_puts(" text='");
-            serial_puts(t->line_buffer);
-            serial_puts("'\n");
-            serial_puts("[COORD] incremental draw at: x=");
-            serial_putdec32(TERM_MARGIN_X);
-            serial_puts(" y=");
-            serial_putdec32(input_y);
-            serial_puts(" font_size=");
-            serial_putdec32(TERM_FONT_SIZE);
-            serial_puts("\n");
-
             int clear_top = input_y - 16;
             if (clear_top < 0)
                 clear_top = 0;
@@ -398,15 +333,6 @@ void terminal_output(const char* str) {
             if (clear_top < win->buf_height &&
                 input_y + TERM_LINE_HEIGHT <= win->buf_height) {
                 // 清除输入行区域（包括上方字形 ascent 部分）
-                serial_puts("[COORD] clear region: y=");
-                serial_putdec32(clear_top);
-                serial_puts(" to y=");
-                serial_putdec32(clear_bottom - 1);
-                serial_puts(" x=0 to x=");
-                serial_putdec32(win->buf_width - 1);
-                serial_puts(" old_input_y=");
-                serial_putdec32(input_y);
-                serial_puts("\n");
                 for (int py = clear_top; py < clear_bottom; py++) {
                     uint32_t* row = &win->buffer[py * win->buf_width];
                     for (int px = 0; px < win->buf_width; px++)
@@ -414,22 +340,17 @@ void terminal_output(const char* str) {
                 }
                 // 绘制输入缓冲区文本
                 if (t->line_buffer_len > 0) {
-                    serial_puts("[COORD] calling ttf_draw_text_utf8_buf(x=");
-                    serial_putdec32(TERM_MARGIN_X);
-                    serial_puts(", y=");
-                    serial_putdec32(input_y);
-                    serial_puts(")\n");
                     ttf_draw_text_utf8_buf(g_font, TERM_MARGIN_X, input_y,
                                            TERM_FONT_SIZE, t->line_buffer_color,
                                            win->buffer, win->buf_width,
                                            win->buf_height, t->line_buffer);
-                    serial_puts("[COORD] ttf_draw done\n");
-                } else {
-                    serial_puts("[COORD] line_buffer empty, no ttf draw\n");
                 }
 
                 // 绘制长方形光标——在当前输入位置
                 {
+                    if (!g_font || g_font->unitsPerEm == 0) {
+                        /* font not available, skip cursor */
+                    } else {
                     int cursor_x = TERM_MARGIN_X;
                     if (t->line_buffer_len > 0)
                         cursor_x += ttf_text_width(g_font, TERM_FONT_SIZE,
@@ -455,16 +376,6 @@ void terminal_output(const char* str) {
                     if (cursor_h < 1)
                         cursor_h = 1;
 
-                    serial_puts("[CURSOR] x=");
-                    serial_putdec32(cursor_x);
-                    serial_puts(" top=");
-                    serial_putdec32(cursor_top);
-                    serial_puts(" w=");
-                    serial_putdec32(cursor_w);
-                    serial_puts(" h=");
-                    serial_putdec32(cursor_h);
-                    serial_puts("\n");
-
                     uint32_t cursor_color = 0xFFFFFFFF; // 白色
                     for (int cy = cursor_top; cy < cursor_top + cursor_h;
                          cy++) {
@@ -475,13 +386,10 @@ void terminal_output(const char* str) {
                             row[cx] = cursor_color;
                         }
                     }
-                }
+                    } /* end else: font available */
+                } /* end cursor block */
             } else {
-                serial_puts("[COORD] input_y out of bounds! input_y=");
-                serial_putdec32(input_y);
-                serial_puts(" buf_h=");
-                serial_putdec32(win->buf_height);
-                serial_puts("\n");
+                /* input_y out of bounds, skip */
             }
         }
         wm_invalidate_window(t->window);

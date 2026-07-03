@@ -2,14 +2,17 @@
 
 #include "boot_splash.h"
 #include "drivers/disk.h"
-#include "drivers/fs/fat32.h"
 #include "drivers/fs/fscache.h"
+#include "drivers/fs/vfs.h"
+#include "drivers/fs/ext2.h"
 #include "drivers/pci.h"
 #include "font_manager.h"
+#include "gdt.h"
 #include "graphics.h"
 #include "kernel.h"
 #include "klog.h"
 #include "memory.h"
+#include "pmm.h"
 #include "shell.h"
 #include "stdint.h"
 #include "string.h"
@@ -19,6 +22,11 @@
 #include "ui/microui.h"
 #include "vmm.h"
 #include "wm.h"
+
+// 来自链接器脚本的符号
+extern uint8_t usertest_start;
+extern uint8_t usertest_end;
+extern uint8_t usertest_size;
 
 TTF_Font* g_font = NULL;
 
@@ -171,22 +179,24 @@ kmain(void* params) {
     boot_splash_set_progress(45);
     boot_splash_present();
 
-    // 挂载磁盘系统
-    kinfo("FS", "Detecting and mounting FAT32 filesystem");
-    uint32_t lba = detect_fat32_partition();
+    // 初始化文件系统层
+    kinfo("FS", "Initializing VFS and detecting filesystem");
     fscache_init();
-    if (!fat32_mount(lba)) {
-        kerror("FS", "FAT32 mount failed: %s", fat32_get_error());
-        boot_splash_log("FAT32 mount FAILED", 0xFF6666);
+    vfs_init();
+    ext2_register();
+
+    uint32_t lba = vfs_detect_partition();
+    if (!vfs_mount("ext2", lba)) {
+        kerror("FS", "EXT2 mount failed: %s", vfs_get_error());
+        boot_splash_log("EXT2 mount FAILED", 0xFF6666);
     } else {
-        kinfo("FS", "FAT32 filesystem mounted successfully at LBA=%u", lba);
-        boot_splash_log("FAT32 filesystem mounted", 0x88FF88);
+        kinfo("FS", "EXT2 filesystem mounted successfully at LBA=%u", lba);
+        boot_splash_log("EXT2 filesystem mounted", 0x88FF88);
     }
     boot_splash_set_progress(55);
     boot_splash_present();
 
     // 加载字体系统和默认字体
-    kinfo("FONT", "Loading system font");
     g_klog_screen = false;
     klog_to_screen = false;
     font_manager_init();
@@ -274,6 +284,39 @@ kmain(void* params) {
     } else {
         kerror("TERM", "Failed to create terminal window");
     }
+
+    // 用户态测试: 进入ring 3执行并向串口打印消息
+    serial_puts("--- entering ring 3 test ---\n");
+
+    // 初始化tss并设置内核栈
+    tss_init();
+    // 用当前rsp作为内核栈
+    uint64_t kernel_rsp;
+    asm volatile("mov %%rsp, %0" : "=r"(kernel_rsp));
+    tss_set_stack(kernel_rsp);
+
+    // 分配物理页并复制用户测试代码
+    uint64_t user_code_phys = (uint64_t)pmm_alloc_zpage();
+    uint32_t code_len = (uint32_t)(uint64_t)&usertest_size;
+    if (user_code_phys) {
+        memcpy((void*)user_code_phys, &usertest_start, code_len);
+    }
+
+    // 复制用户测试代码到identity-mapped区域(0x400000)并标记为user
+    uint64_t user_code_virt = 0x400000;
+    memcpy((void*)user_code_virt, &usertest_start, code_len);
+    vmm_make_user(kernel_pml4, user_code_virt);
+
+    // 分配用户栈并标记为user(0x500000处)
+    uint64_t user_stack_phys = (uint64_t)pmm_alloc_zpage();
+    uint64_t user_stack_top = 0x501000;
+    memcpy((void*)(user_stack_top - 0x1000), (void*)user_stack_phys, 0x1000);
+    vmm_make_user(kernel_pml4, user_stack_top - 0x1000);
+
+    // 进入用户态
+    enter_usermode(user_code_virt, user_stack_top);
+
+    serial_puts("--- back from ring 3 test ---\n");
 
     // 开启调度器
     kinfo("SCHED", "Starting scheduler");

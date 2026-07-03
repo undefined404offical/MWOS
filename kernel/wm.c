@@ -969,28 +969,6 @@ static void wm_draw_window_clipped_to(uint32_t* buf, uint32_t pitch,
         int copy_w = cx1 - cx0;
         int src_off = cx0 - content_x0; // win->buffer 中的列偏移
 
-        serial_puts("[WM_COPY] content: win_id=");
-        serial_putdec32(win->id);
-        serial_puts(" ty=");
-        serial_putdec32(ty);
-        serial_puts(" th=");
-        serial_putdec32(th);
-        serial_puts(" cx0=");
-        serial_putdec32(cx0);
-        serial_puts(" cx1=");
-        serial_putdec32(cx1);
-        serial_puts(" copy_w=");
-        serial_putdec32(copy_w);
-        serial_puts(" src_off=");
-        serial_putdec32(src_off);
-        serial_puts(" ry1=");
-        serial_putdec32(ry1);
-        serial_puts(" ry2=");
-        serial_putdec32(ry2);
-        serial_puts(" bh=");
-        serial_putdec32(bh);
-        serial_puts("\n");
-
         for (int yy = 0; yy < bh; yy++) {
             int sy = ty + th + yy;
             if (sy < ry1 || sy >= ry2 || sy < 0 || sy >= sh)
@@ -1267,20 +1245,6 @@ void wm_redraw_dirty(void) {
 
         coverage_clear_rect(x1, y1, x2, y2);
 
-        serial_puts("[WM_DIRTY] rect: x1=");
-        serial_putdec32(x1);
-        serial_puts(" y1=");
-        serial_putdec32(y1);
-        serial_puts(" x2=");
-        serial_putdec32(x2);
-        serial_puts(" y2=");
-        serial_putdec32(y2);
-        serial_puts(" sw=");
-        serial_putdec32(sw);
-        serial_puts(" sh=");
-        serial_putdec32(sh);
-        serial_puts("\n");
-
         wm_window_t* windows[128];
         int win_count = 0;
         for (wm_window_t* w = g_window_list; w && win_count < 128;
@@ -1298,21 +1262,9 @@ void wm_redraw_dirty(void) {
             int wx2 = win->x + win->width;
             int wy2 = win->y + win->title_height + win->height;
 
-            serial_puts("[WM_WIN] id=");
-            serial_putdec32(win->id);
-            serial_puts(" wx1=");
-            serial_putdec32(wx1);
-            serial_puts(" wy1=");
-            serial_putdec32(wy1);
-            serial_puts(" wx2=");
-            serial_putdec32(wx2);
-            serial_puts(" wy2=");
-            serial_putdec32(wy2);
             if (wx1 >= x2 || wy1 >= y2 || wx2 <= x1 || wy2 <= y1) {
-                serial_puts(" SKIP\n");
                 continue;
             }
-            serial_puts(" DRAW\n");
 
             if (g_incremental_render_enabled) {
                 wm_draw_window_with_coverage(bb, bb_p, win, x1, y1, x2, y2,

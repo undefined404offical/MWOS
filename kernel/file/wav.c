@@ -1,7 +1,7 @@
 #include "file/wav.h"
 #include "serial.h"
 #include <string.h>
-#include "drivers/fs/fat32.h"
+#include "drivers/fs/vfs.h"
 #include "memory.h"
 #include "drivers/hda.h"
 #include "timer.h"
@@ -102,21 +102,28 @@ bool wav_parse_header(const uint8_t* buf, uint32_t size, wav_info_t* out)
 
 void hda_play_wav_file(const char* path)
 {
-    if (!fat32_mounted()) {
-        serial_puts("WAV: FAT32 not mounted\n");
+    if (!vfs_mounted()) {
+        serial_puts("WAV: filesystem not mounted\n");
         return;
     }
 
-    if (!fat32_file_exists(path)) {
+    if (!vfs_file_exists(path)) {
         serial_puts("WAV: file not found: ");
         serial_puts(path);
         serial_puts("\n");
         return;
     }
 
-    uint32_t file_size = fat32_get_file_size(path);
+    vfs_file_t handle;
+    if (!vfs_open(path, &handle, VFS_READ)) {
+        serial_puts("WAV: vfs_open failed\n");
+        return;
+    }
+
+    uint32_t file_size = handle.file_size;
     if (file_size == 0) {
         serial_puts("WAV: empty file\n");
+        vfs_close(&handle);
         return;
     }
 
@@ -126,28 +133,29 @@ void hda_play_wav_file(const char* path)
     serial_putdec64(file_size);
     serial_puts("\n");
 
-    fat32_handle_t handle;
-    if (!fat32_open(path, &handle, FILE_READ)) {
-        serial_puts("WAV: fat32_open failed\n");
-        return;
-    }
-
     uint8_t* file_buf = (uint8_t*)kmalloc(file_size);
-    //memset(file_buf, 0, file_size); 
     if (!file_buf) {
         serial_puts("WAV: kmalloc failed\n");
-        fat32_close(&handle);
+        vfs_close(&handle);
         return;
     }
 
-    bool ok = fat32_read_all_fast(&handle, file_buf);
-    fat32_close(&handle);
-
-    if (!ok) {
-        serial_puts("WAV: read_all_fast failed\n");
-        kfree(file_buf);
-        return;
+    // 分块读取
+    uint32_t total = 0;
+    while (total < file_size) {
+        uint32_t chunk = file_size - total;
+        if (chunk > 4096) chunk = 4096;
+        uint32_t bytes_read = 0;
+        if (!vfs_read(&handle, file_buf + total, chunk, &bytes_read)) {
+            serial_puts("WAV: read failed\n");
+            kfree(file_buf);
+            vfs_close(&handle);
+            return;
+        }
+        if (bytes_read == 0) break;
+        total += bytes_read;
     }
+    vfs_close(&handle);
 
     wav_info_t info;
     if (!wav_parse_header(file_buf, file_size, &info)) {

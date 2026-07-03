@@ -36,6 +36,8 @@ typedef uint64_t pt_entry_t;
 extern pt_entry_t *kernel_pml4;
 
 void vmm_map_kernel(pt_entry_t* pml4, uint64_t virt, uint64_t phys);
+void vmm_map_user(pt_entry_t* pml4, uint64_t virt, uint64_t phys);
+void vmm_make_user(pt_entry_t* pml4, uint64_t virt);
 void vmm_init(void);
 
 #endif // VMM_H

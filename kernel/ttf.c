@@ -1,5 +1,5 @@
 #include "ttf.h"
-#include "drivers/fs/fat32.h"
+#include "drivers/fs/vfs.h"
 #include "graphics.h"
 #include "klog.h"
 #include "memory.h"
@@ -262,30 +262,6 @@ static void blit_glyph_bitmap_buf(const TTF_GlyphCacheEntry* e, int x, int y,
     int dst_x0 = x + e->xMin;
     int dst_y0 = y + e->yMin;
 
-    serial_puts("[BLIT] glyph=");
-    serial_putdec32(e->glyph_index);
-    serial_puts(" pen_x=");
-    serial_putdec32(x);
-    serial_puts(" pen_y=");
-    serial_putdec32(y);
-    serial_puts(" dst_x0=");
-    serial_putdec32(dst_x0);
-    serial_puts(" dst_y0=");
-    serial_putdec32(dst_y0);
-    serial_puts(" w=");
-    serial_putdec32(e->width);
-    serial_puts(" h=");
-    serial_putdec32(e->height);
-    serial_puts(" xMin=");
-    serial_putdec32(e->xMin);
-    serial_puts(" yMin=");
-    serial_putdec32(e->yMin);
-    serial_puts(" buf_w=");
-    serial_putdec32(buf_w);
-    serial_puts(" buf_h=");
-    serial_putdec32(buf_h);
-    serial_puts("\n");
-
     int by_min = 0, by_max = e->height - 1;
     if (dst_y0 + by_min < 0)
         by_min = -dst_y0;
@@ -387,11 +363,9 @@ void ttf_draw_glyph_buf(const TTF_Font* font, uint16_t glyph_index, int x,
 TTF_Font* ttf_load_from_path(const char* path) {
     char full[256];
     resolve_path(path, full);
-    kinfo("TTF: 加载字体: %s", full);
 
-    fat32_handle_t fh;
-    if (!fat32_open(full, &fh, FILE_READ)) {
-        kerror("TTF: 无法打开字体文件: %s", full);
+    vfs_file_t fh;
+    if (!vfs_open(full, &fh, VFS_READ)) {
         return NULL;
     }
 
@@ -399,17 +373,25 @@ TTF_Font* ttf_load_from_path(const char* path) {
     uint8_t* buf = (uint8_t*)kmalloc(size);
     if (!buf) {
         kerror("TTF: 内存不足");
-        fat32_close(&fh);
+        vfs_close(&fh);
         return NULL;
     }
 
-    if (!fat32_read(&fh, buf, size)) {
-        kerror("TTF: 读取失败: %s", full);
-        kfree(buf);
-        fat32_close(&fh);
-        return NULL;
+    // 分块读取到内存
+    uint32_t total = 0;
+    while (total < size) {
+        uint32_t chunk = size - total;
+        if (chunk > 65536) chunk = 65536;
+        uint32_t bytes_read = 0;
+        if (!vfs_read(&fh, buf + total, chunk, &bytes_read)) {
+            kfree(buf);
+            vfs_close(&fh);
+            return NULL;
+        }
+        if (bytes_read == 0) break;
+        total += bytes_read;
     }
-    fat32_close(&fh);
+    vfs_close(&fh);
 
     TTF_Font* font = (TTF_Font*)kmalloc(sizeof(TTF_Font));
     if (!font) {
@@ -620,16 +602,6 @@ void ttf_draw_text_utf8_buf(const TTF_Font* font, int x, int y, int pixel_size,
     const char* p = utf8;
     int char_count = 0;
 
-    serial_puts("[TTF_COORD] ttf_draw_text_utf8_buf start: x=");
-    serial_putdec32(x);
-    serial_puts(" y=");
-    serial_putdec32(y);
-    serial_puts(" pixel_size=");
-    serial_putdec32(pixel_size);
-    serial_puts(" text='");
-    serial_puts(utf8);
-    serial_puts("'\n");
-
     while (*p) {
         uint32_t cp = utf8_decode(&p);
         if (cp == '\n') {
@@ -648,49 +620,14 @@ void ttf_draw_text_utf8_buf(const TTF_Font* font, int x, int y, int pixel_size,
             continue;
         }
 
-        if (char_count == 0) {
-            serial_puts("[TTF_COORD] first char: cp=");
-            serial_putdec32(cp);
-            serial_puts(" glyph=");
-            serial_putdec32(glyph);
-            serial_puts(" pen_x=");
-            serial_putdec32(pen_x);
-            serial_puts(" y=");
-            serial_putdec32(y);
-            serial_puts(" buf_w=");
-            serial_putdec32(buf_w);
-            serial_puts(" buf_h=");
-            serial_putdec32(buf_h);
-            serial_puts("\n");
-        }
-
         ttf_draw_glyph_buf(font, glyph, pen_x, y, pixel_size, color, buf, buf_w,
                            buf_h);
         TTF_GlyphCacheEntry* ce =
             glyph_cache_lookup(glyph, (uint16_t)pixel_size);
         int adv = ce ? ce->advance_width : get_unit_advance(font, glyph);
-        int advance_pixels =
-            (int)((int64_t)adv * pixel_size / font->unitsPerEm);
-
-        if (char_count == 0) {
-            serial_puts("[TTF_COORD] first char advance: adv_unit=");
-            serial_putdec32(adv);
-            serial_puts(" adv_pixels=");
-            serial_putdec32(advance_pixels);
-            serial_puts(" next_pen_x=");
-            serial_putdec32(pen_x + advance_pixels);
-            serial_puts("\n");
-        }
-
-        pen_x += advance_pixels;
+        pen_x += (int)((int64_t)adv * pixel_size / font->unitsPerEm);
         char_count++;
     }
-
-    serial_puts("[TTF_COORD] ttf_draw_text_utf8_buf end: total_chars=");
-    serial_putdec32(char_count);
-    serial_puts(" final_pen_x=");
-    serial_putdec32(pen_x);
-    serial_puts("\n");
 }
 
 // 计算 UTF‑8 文本在不同像素大小下的宽度（像素），不执行渲染
@@ -773,7 +710,6 @@ void ttf_dump_codepoints(TTF_Font* font) {
 
 void ttf_play_loading_animation(const char* font_path, int x, int y,
                                 uint32_t duration_ms, uint16_t pixel_size) {
-    serial_puts("ttf 1\n");
     TTF_Font* font = ttf_load_from_path(font_path);
     if (!font)
         return;
@@ -786,19 +722,14 @@ void ttf_play_loading_animation(const char* font_path, int x, int y,
         if (g != 0)
             frames[frame_count++] = (uint16_t)cp;
     }
-    serial_puts("ANIM: frame_count = ");
-    serial_putdec64(frame_count);
-    serial_puts("\n");
     if (frame_count == 0) {
         ttf_unload(font);
         return;
     }
-    serial_puts("ttf 2\n");
     uint64_t start = timer_ms();
     int frame = 0;
 
     while (timer_ms() - start < duration_ms) {
-        serial_puts("ttf w\n");
         uint16_t cp = frames[frame];
         uint16_t glyph = ttf_char_to_glyph(font, cp);
 

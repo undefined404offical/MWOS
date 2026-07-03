@@ -221,8 +221,8 @@ bool fscache_read_sector(uint32_t device_id, uint64_t sector, uint8_t *buffer)
         return true;
     }
     
-    // 缓存未命中，从磁盘读取
-    if (!disk_read(sector, 1, buffer)) {
+    // 缓存未命中，从磁盘读取（disk_read 返回 0 表示成功）
+    if (disk_read((uint32_t)sector, 1, buffer) != 0) {
         g_fscache.miss_count++;
         return false;
     }

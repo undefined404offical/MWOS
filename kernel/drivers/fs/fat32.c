@@ -821,47 +821,47 @@ bool fat32_init(uint32_t partition_start_sector) {
         set_error("Failed to read FAT32 boot sector");
         return false;
     }
-serial_puts("DBR bytes @0x0B..0x0F: ");
-for (int i = 0x0B; i <= 0x0F; i++) {
-    serial_puthex8(sector_buffer[i]);
-    serial_puts(" ");
-}
-serial_puts("\n");
+    serial_puts("DBR bytes @0x0B..0x0F: ");
+    for (int i = 0x0B; i <= 0x0F; i++) {
+        serial_puthex8(sector_buffer[i]);
+        serial_puts(" ");
+    }
+    serial_puts("\n");
 
-serial_puts("DBR bytes @0x2C..0x2F (RootClus raw): ");
-for (int i = 0x2C; i <= 0x2F; i++) {
-    serial_puthex8(sector_buffer[i]);
-    serial_puts(" ");
-}
-serial_puts("\n");
+    serial_puts("DBR bytes @0x2C..0x2F (RootClus raw): ");
+    for (int i = 0x2C; i <= 0x2F; i++) {
+        serial_puthex8(sector_buffer[i]);
+        serial_puts(" ");
+    }
+    serial_puts("\n");
 
     /* 2. 拷贝 BPB */
     memcpy(&g_bpb, sector_buffer, sizeof(fat32_bpb_t));
     bpb = g_bpb;
     serial_puts("INIT BPB decoded:\n");
-serial_puts("  bytes_per_sector = ");
-serial_putdec64(bpb.bytes_per_sector);
-serial_puts("\n  sectors_per_cluster = ");
-serial_putdec64(bpb.sectors_per_cluster);
-serial_puts("\n  reserved_sectors = ");
-serial_putdec64(bpb.reserved_sectors);
-serial_puts("\n  fat_count = ");
-serial_putdec64(bpb.fat_count);
-serial_puts("\n  total_sectors_16 = ");
-serial_putdec64(bpb.total_sectors_16);
-serial_puts("\n  total_sectors_32 = ");
-serial_putdec64(bpb.total_sectors_32);
-serial_puts("\n  sectors_per_fat_16 = ");
-serial_putdec64(bpb.sectors_per_fat_16);
-serial_puts("\n  sectors_per_fat_32 = ");
-serial_putdec64(bpb.sectors_per_fat_32);
-serial_puts("\n  root_cluster = ");
-serial_putdec64(bpb.root_cluster);
-serial_puts("\n  fs_info_sector = ");
-serial_putdec64(bpb.fs_info_sector);
-serial_puts("\n  backup_boot_sector = ");
-serial_putdec64(bpb.backup_boot_sector);
-serial_puts("\n");
+    serial_puts("  bytes_per_sector = ");
+    serial_putdec64(bpb.bytes_per_sector);
+    serial_puts("\n  sectors_per_cluster = ");
+    serial_putdec64(bpb.sectors_per_cluster);
+    serial_puts("\n  reserved_sectors = ");
+    serial_putdec64(bpb.reserved_sectors);
+    serial_puts("\n  fat_count = ");
+    serial_putdec64(bpb.fat_count);
+    serial_puts("\n  total_sectors_16 = ");
+    serial_putdec64(bpb.total_sectors_16);
+    serial_puts("\n  total_sectors_32 = ");
+    serial_putdec64(bpb.total_sectors_32);
+    serial_puts("\n  sectors_per_fat_16 = ");
+    serial_putdec64(bpb.sectors_per_fat_16);
+    serial_puts("\n  sectors_per_fat_32 = ");
+    serial_putdec64(bpb.sectors_per_fat_32);
+    serial_puts("\n  root_cluster = ");
+    serial_putdec64(bpb.root_cluster);
+    serial_puts("\n  fs_info_sector = ");
+    serial_putdec64(bpb.fs_info_sector);
+    serial_puts("\n  backup_boot_sector = ");
+    serial_putdec64(bpb.backup_boot_sector);
+    serial_puts("\n");
 
     /* 3. 从 BPB 解析关键字段 */
     fs_info.bytes_per_sector    = bpb.bytes_per_sector;
@@ -954,11 +954,9 @@ bool fat32_open(const char* path, fat32_handle_t* handle, file_mode_t mode) {
         set_error("Invalid parameters");
         return false;
     }
-    handle->current_cluster = handle->first_cluster;
-handle->buffer_sector = 0xFFFFFFFF;  // 强制第一次读 sector
-handle->position = 0;
 
     memset(handle, 0, sizeof(fat32_handle_t));
+    handle->buffer_sector = 0xFFFFFFFF;  // 强制第一次读 sector
 
     if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
         if (mode != FILE_READ) {
