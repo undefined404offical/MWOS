@@ -320,7 +320,7 @@ EFI_STATUS boot_kernel(void) {
     } boot_params_t;
 #pragma pack(pop)
 
-    // 在 ExitBootServices 之前分配内存存储参数
+    // 在ExitBootServices之前分配内存存储参数
     boot_params_t* params = NULL;
     gST->BootServices->AllocatePool(EfiLoaderData, sizeof(boot_params_t),
                                     (VOID**)&params);
@@ -413,7 +413,7 @@ EFI_STATUS boot_kernel(void) {
             print_string(mode_num);
             print_string(L"\r\n");
 
-// 1920x1080
+// 1920x1080 特殊适配
 #ifdef COMPATIBLE_MODE
             if (!found_target && mode_info->HorizontalResolution == 1920 &&
                 mode_info->VerticalResolution == 1080) {

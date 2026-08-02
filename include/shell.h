@@ -14,6 +14,9 @@
 #define SHELL_MAX_NAME        32
 #define SHELL_MAX_COMPLETIONS 64
 
+// shell输出缓冲区大小
+#define SHELL_OUTPUT_BUF_SIZE 4096
+
 typedef void (*shell_output_fn)(const char* str);
 typedef void (*shell_command_fn)(int argc, char** argv);
 

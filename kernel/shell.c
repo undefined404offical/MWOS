@@ -9,6 +9,22 @@
 
 static shell_state_t g_shell;
 
+/* ======================================================================== */
+/*  Shell 输出缓冲 – 将多次 shell_print/shell_printf 合并为一次输出        */
+/* ======================================================================== */
+static char g_output_buf[SHELL_OUTPUT_BUF_SIZE];
+static int  g_output_buf_len;
+
+/* 刷新缓冲区：将累积的输出一次性发送到终端 */
+static void shell_buf_flush(void)
+{
+    if (g_output_buf_len > 0 && g_shell.output) {
+        g_shell.output(g_output_buf);
+        g_output_buf_len = 0;
+        g_output_buf[0] = '\0';
+    }
+}
+
 void resolve_path(const char* path, char* full_path) {
     if (!path || !full_path)
         return;
@@ -218,6 +234,10 @@ void shell_init(void) {
     history_init(&g_shell.history);
     completion_init(&g_shell.completion);
 
+    /* 初始化输出缓冲区 */
+    g_output_buf_len = 0;
+    g_output_buf[0] = '\0';
+
     shell_register_command("echo", "Print text to terminal", builtin_echo);
     shell_register_command("clear", "Clear terminal screen", builtin_clear);
     shell_register_command("ls", "List directory contents", builtin_ls);
@@ -242,6 +262,7 @@ void shell_init(void) {
 void shell_print_prompt(void) {
     shell_print("\n");
     shell_printf("%s@%s:%s$ ", g_shell.username, g_shell.hostname, g_shell.cwd);
+    shell_buf_flush();  /* 确保提示符立即显示（如程序退出、补全后等场景） */
 }
 
 void shell_set_output(shell_output_fn fn) { g_shell.output = fn; }
@@ -249,9 +270,27 @@ void shell_set_output(shell_output_fn fn) { g_shell.output = fn; }
 shell_state_t* shell_get_state(void) { return &g_shell; }
 
 void shell_print(const char* str) {
-    if (g_shell.output && str) {
+    if (!str || !g_shell.output)
+        return;
+
+    int len = strlen(str);
+    if (len == 0)
+        return;
+
+    /* 如果缓冲区放不下，先自动刷新 */
+    if (g_output_buf_len + len >= SHELL_OUTPUT_BUF_SIZE - 1)
+        shell_buf_flush();
+
+    /* 如果字符串仍然太大，直接输出（绕过缓冲区） */
+    if (len >= SHELL_OUTPUT_BUF_SIZE - 1) {
         g_shell.output(str);
+        return;
     }
+
+    /* 写入缓冲区 */
+    memcpy(g_output_buf + g_output_buf_len, str, len);
+    g_output_buf_len += len;
+    g_output_buf[g_output_buf_len] = '\0';
 }
 
 void shell_printf(const char* fmt, ...) {
@@ -264,7 +303,7 @@ void shell_printf(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    g_shell.output(buf);
+    shell_print(buf);
 }
 
 void shell_register_command(const char* name, const char* desc,
@@ -365,6 +404,8 @@ static void refresh_input_line(void) {
     if (!g_shell.output)
         return;
 
+    shell_buf_flush();  /* 先提交之前的缓冲输出 */
+
     shell_print("\r\033[K");
     shell_printf("%s@%s:%s$ ", g_shell.username, g_shell.hostname, g_shell.cwd);
     shell_print(g_shell.input.buffer);
@@ -372,9 +413,11 @@ static void refresh_input_line(void) {
     if (g_shell.input.cursor < g_shell.input.length) {
         int move_left = g_shell.input.length - g_shell.input.cursor;
         for (int i = 0; i < move_left; i++) {
-            g_shell.output("\b");
+            shell_print("\b");
         }
     }
+
+    shell_buf_flush();  /* 立即刷新，使用户看到更新 */
 }
 
 static void handle_tab(void) {
@@ -438,6 +481,7 @@ static void handle_tab(void) {
         shell_print_prompt();
         shell_print(in->buffer);
         g_shell.in_completion = false;
+        shell_buf_flush();  /* 刷新补全列表 + 提示符 */
     }
 }
 
@@ -463,16 +507,12 @@ static void handle_down_arrow(void) {
 
 static void handle_left_arrow(void) {
     input_move_left(&g_shell.input);
-    if (g_shell.output) {
-        g_shell.output("\033[D");
-    }
+    shell_print("\033[D");
 }
 
 static void handle_right_arrow(void) {
     input_move_right(&g_shell.input);
-    if (g_shell.output) {
-        g_shell.output("\033[C");
-    }
+    shell_print("\033[C");
 }
 
 void shell_process_char(char c) {
@@ -493,6 +533,7 @@ void shell_process_char(char c) {
 
         shell_printf("%s@%s:%s$ ", g_shell.username, g_shell.hostname,
                      g_shell.cwd);
+        shell_buf_flush();  /* 一次性刷新命令输出 + 提示符到终端 */
         terminal_refresh();
         return;
     }
@@ -501,6 +542,7 @@ void shell_process_char(char c) {
         if (g_shell.input.cursor > 0) {
             input_backspace(&g_shell.input);
             shell_print("\b \b");
+            shell_buf_flush();  /* 立即刷新，使退格效果可见 */
         }
         return;
     }

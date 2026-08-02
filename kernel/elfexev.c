@@ -29,16 +29,22 @@ uint64_t g_elf_ret_rsp = 0;
 /* 退出回调 – 外部可注册（如 shell_print_prompt）                       */
 void (*g_elf_on_exit)(void) = NULL;
 
+/* 保存 elfexec 的返回地址，供 elf_exit_handler 跳回 kmain 使用          */
+uint64_t g_elf_ret_addr = 0;
+
 /* ------------------------------------------------------------------ */
 /* 退出处理 – 用户程序 sys_exit 后回到这里                            */
 /* ------------------------------------------------------------------ */
-static void __attribute__((noreturn)) elf_exit_handler(void)
+void elf_exit_handler(void)
 {
     serial_puts("\n[program exited]\n");
     if (g_elf_on_exit)
         g_elf_on_exit();
-    for (;;)
-        asm volatile("hlt");
+
+    /* 从全局变量恢复返回地址，跳回 elfexec 的调用者（kmain） */
+    void *addr = (void *)g_elf_ret_addr;
+    g_elf_ret_addr = 0;
+    asm volatile("jmp *%0" : : "r"(addr));
 }
 
 /* ------------------------------------------------------------------ */
@@ -243,7 +249,33 @@ int elfexec(struct proc *p,
 
     elf_printf("[ELF]   stack @ 0x%lX - 0x%lX\n", stack_vaddr, stack_rsp);
 
-    /* ---- 5. 保存内核返回信息 ---- */
+    /* ---- 5. 设置初始栈布局（musl ABI: argc/argv/envp/auxv） ---- */
+    /* 标准 x86_64 Linux 初始栈布局 (从栈顶向下):
+     *   [auxv pairs]    (AT_NULL 终止)
+     *   [envp 指针数组]  (NULL 终止)
+     *   [argv 指针数组]  (NULL 终止)
+     *   argc
+     *   RSP → (16-byte aligned)
+     *
+     * 最小配置: argc=0, argv=[NULL], envp=[NULL], auxv=[AT_NULL=0]
+     */
+    uint64_t *stack_top = (uint64_t *)(stack_rsp);
+
+    /* 从栈顶向下写入 (栈向下生长) */
+    stack_top[-1] = 0;  /* auxv[0] = AT_NULL = 0 */
+    stack_top[-2] = 0;  /* envp[0] = NULL  */
+    stack_top[-3] = 0;  /* argv[0] = NULL */
+    stack_top[-4] = 0;  /* argc = 0 */
+
+    /* 调整 RSP 指到 argc 的位置 */
+    stack_rsp = (uint64_t)&stack_top[-4];
+
+    elf_printf("[ELF]   initial RSP=0x%lX (argc=0, argv=NULL, envp=NULL)\n", stack_rsp);
+
+    /* ---- 6. 保存内核返回信息 ---- */
+    /* 保存返回地址，供 elf_exit_handler 跳回 kmain */
+    g_elf_ret_addr = (uint64_t)__builtin_return_address(0);
+
     uint64_t kernel_rsp;
     asm volatile("mov %%rsp, %0" : "=r"(kernel_rsp));
     g_elf_ret_rsp = kernel_rsp;
@@ -252,11 +284,11 @@ int elfexec(struct proc *p,
     /* 更新 TSS.RSP0，使 ring 3 的 int/syscall 回到正确的内核栈 */
     tss_set_stack(kernel_rsp + 512);  /* 留出足够空间给中断帧 */
 
-    /* ---- 6. 进入用户态 ---- */
+    /* ---- 7. 进入用户态 ---- */
     serial_puts("[ELF] entering user mode...\n");
     enter_usermode(entry, stack_rsp);
 
-    /* ---- 用户程序退出后回到这里 ---- */
+    /* ---- 用户程序退出后回到这里（通过 sys_exit 的 iretq 路径） ---- */
     elf_exit_handler();
     kfree(file_buf);
     return 0;

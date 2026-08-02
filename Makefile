@@ -205,13 +205,12 @@ $(BUILDDIR)/disk.img: uefi kernel programs
 run: mkdisk
 	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -m 1G
 
-# 高半区偏移量 = 0xFFFFFFFF80000000 (KERNEL_VIRT_BASE) - 0x100000 (kernel phys load addr)
+# 高半区偏移量=0xFFFFFFFF80000000-0x100000
 HIGH_HALF_OFFSET := 0xFFFFFFFF7FF00000
 
 debug: mkdisk
 	@echo "==> QEMU with GDB server on localhost:1234"
-	@echo "==> Connect GDB: gdb -x scripts/gdb_highhalf.gdb"
-	qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -s -S -m 1G
+	@qemu-system-x86_64 -bios OVMF.fd -drive file=$(BUILDDIR)/disk.img,format=raw -serial stdio -s -S -m 1G
 
 q35: mkdisk
 	@echo "==> QEMU (Q35) with GDB server on localhost:1234"
@@ -230,8 +229,8 @@ q35: mkdisk
 		-device AC97 \
 		-usb -device usb-tablet
 
-gdb-q35: mkdisk
-	@echo "==> Starting QEMU (Q35) in background with GDB server..."
+debug-q35: mkdisk
+	@echo "==> Starting QEMU (Q35)..."
 	@qemu-system-x86_64 \
 		-M q35 \
 		-bios OVMF.fd \
@@ -244,7 +243,8 @@ gdb-q35: mkdisk
 		-netdev user,id=net0 \
 		-device AC97 \
 		-usb -device usb-tablet &
-	@sleep 2
+
+gdb:
 	@echo "==> Launching GDB (high-half symbols)..."
 	@gdb -x scripts/gdb_highhalf.gdb
 

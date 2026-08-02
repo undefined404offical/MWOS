@@ -46,6 +46,8 @@ struct window {
     wm_draw_callback_t draw;
     wm_event_callback_t on_mouse;
 
+    void* user_data;
+
     struct window* parent;
     struct window* next;
 };
@@ -69,7 +71,10 @@ extern wm_window_t* g_dragging_window;
 extern uint32_t* g_backbuffer;
 extern uint32_t g_backbuffer_pitch;
 
+extern wm_window_t* g_desktop_window;
+
 void wm_init(int screen_w, int screen_h);
+void wm_desktop_init(void);
 
 wm_window_t* wm_create_window(int x, int y, int w, int h, const char* title,
                               wm_draw_callback_t draw_func,

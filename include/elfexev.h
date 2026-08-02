@@ -24,7 +24,13 @@ int elfexec(struct proc *p,
 extern uint64_t g_elf_ret_rip;
 extern uint64_t g_elf_ret_rsp;
 
+/* elfexec 的返回地址，供 elf_exit_handler 跳回调用者 */
+extern uint64_t g_elf_ret_addr;
+
 /* 退出回调 – elf_exit_handler 在 halt 前调用（注册 shell_print_prompt 等） */
 extern void (*g_elf_on_exit)(void);
+
+/* 用户程序退出后返回到此函数 */
+void elf_exit_handler(void);
 
 #endif /* ELFEXEV_H */

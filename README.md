@@ -28,22 +28,6 @@
 - **多任务**：协作式调度器，支持线程
 - **PCI**：PCI 总线扫描和设备枚举
 
-## 项目结构
-
-```
-MWOS/
-├── boot/              # UEFI 引导加载程序
-├── kernel/            # 内核源代码
-│   ├── drivers/       # 硬件驱动（磁盘、PCI、PS/2）
-│   │   └── fs/        # 文件系统驱动（FAT32、缓存）
-│   └── ui/            # UI 组件（microui）
-├── include/           # 头文件
-├── assets/            # 资源文件（字体、rootfs）
-│   └── rootfs/        # 文件系统内容
-├── programs/          # 用户空间程序
-├── tools/             # 构建工具
-└── docs/              # 文档
-```
 
 ## 构建
 

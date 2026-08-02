@@ -13,15 +13,15 @@
 
 #define GDT_KCODE 1
 #define GDT_KDATA 2
-#define GDT_UCODE 3
-#define GDT_UDATA 4
+#define GDT_UDATA 3
+#define GDT_UCODE 4
 #define GDT_TSS   5
 #define GDT_ENTRIES 7   // tss descriptor占2个entry(num 5 + num 6)
 
 #define SEL_KCODE ((GDT_KCODE) * 8)       // 0x08
 #define SEL_KDATA ((GDT_KDATA) * 8)       // 0x10
-#define SEL_UCODE ((GDT_UCODE) * 8 | 3)   // 0x1B
-#define SEL_UDATA ((GDT_UDATA) * 8 | 3)   // 0x23
+#define SEL_UDATA ((GDT_UDATA) * 8 | 3)   // 0x1B  (user data)
+#define SEL_UCODE ((GDT_UCODE) * 8 | 3)   // 0x23  (user code)
 #define SEL_TSS   ((GDT_TSS)   * 8)       // 0x28
 
 struct gdt_entry {

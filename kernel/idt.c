@@ -3,20 +3,18 @@
 #include "serial.h"
 #include "trap.h"
 
-extern void *isr_stub_table[];
+extern void* isr_stub_table[];
 
 __attribute__((aligned(0x10))) static struct idt_entry idt[256];
 static struct idt_ptr idtr;
 
 static interrupt_handler_t interrupt_handlers[256];
 
-void register_interrupt_handler(uint8_t n, interrupt_handler_t handler)
-{
+void register_interrupt_handler(uint8_t n, interrupt_handler_t handler) {
     interrupt_handlers[n] = handler;
 }
 
-static void idt_set_gate(uint8_t vector, void *isr, uint8_t flags)
-{
+static void idt_set_gate(uint8_t vector, void* isr, uint8_t flags) {
     uint64_t addr = (uint64_t)isr;
 
     idt[vector].isr_low = addr & 0xFFFF;
@@ -28,38 +26,25 @@ static void idt_set_gate(uint8_t vector, void *isr, uint8_t flags)
     idt[vector].reserved = 0;
 }
 
-static void print_reg(const char *name, uint64_t val)
-{
+static void print_reg(const char* name, uint64_t val) {
     serial_puts(name);
     serial_puts(": ");
     serial_puthex64(val);
     serial_puts("  ");
 }
 
-void idt_handler(Trapframe *tf)
-{
-    // syscall gets special treatment (no eoi, no user print)
-    if (tf->int_no == T_SYSCALL) {
-        handle_syscall(tf);
-        return;
-    }
-
+void idt_handler(Trapframe* tf) {
     interrupt_handler_t handler = interrupt_handlers[tf->int_no];
 
-    if (handler)
-    {
+    if (handler) {
         handler(tf);
-    }
-    else
-    {
-        if (tf->int_no < 32)
-        {
+    } else {
+        if (tf->int_no < 32) {
             serial_puts("\n================ EXCEPTION DUMP ================\n");
             serial_puts("EXCEPTION: ");
             serial_putdec64(tf->int_no);
 
-            if (tf->int_no == T_PGFLT)
-            {
+            if (tf->int_no == T_PGFLT) {
                 uint64_t cr2;
                 asm volatile("mov %%cr2, %0" : "=r"(cr2));
                 serial_puts(" (PAGE FAULT)");
@@ -100,10 +85,8 @@ void idt_handler(Trapframe *tf)
             print_reg("SS ", tf->ss);
 
             serial_puts("\n================================================\n");
-
-            while (1)
-            {
-                asm("hlt");
+            while (1) {
+                asm volatile("hlt");
             }
         }
     }
@@ -111,28 +94,19 @@ void idt_handler(Trapframe *tf)
     send_eoi(tf->int_no);
 }
 
-void send_eoi(int int_no)
-{
-    if (int_no >= IRQ_OFFSET && int_no < IRQ_OFFSET + 16)
-    {
-        if (int_no >= IRQ_OFFSET + 8)
-        {
+void send_eoi(int int_no) {
+    if (int_no >= IRQ_OFFSET && int_no < IRQ_OFFSET + 16) {
+        if (int_no >= IRQ_OFFSET + 8) {
             outb(0xA0, 0x20);
         }
         outb(0x20, 0x20);
     }
 }
 
-void idt_init(void)
-{
-    for (int i = 0; i < 256; i++)
-    {
-        // 0x8E: P=1, DPL=0, gate=1110 (64-bit interrupt gate)
-        uint8_t attr = 0x8E;
-        // syscall vector (48) use DPL=3 so ring 3 can call it
-        if (i == T_SYSCALL)
-            attr = 0xEE;  // P=1, DPL=3, gate=1110
-        idt_set_gate(i, isr_stub_table[i], attr);
+void idt_init(void) {
+    for (int i = 0; i < 256; i++) {
+        idt_set_gate(i, isr_stub_table[i],
+                     0x8E); // P=1, DPL=0, gate=1110 (64-bit interrupt gate)
     }
 
     idtr.limit = sizeof(idt) - 1;

@@ -8,6 +8,7 @@
 #include "drivers/pci.h"
 #include "font_manager.h"
 #include "gdt.h"
+#include "idt.h"
 #include "graphics.h"
 #include "kernel.h"
 #include "klog.h"
@@ -149,6 +150,45 @@ kmain(void* params) {
     boot_splash_set_progress(15);
     boot_splash_present();
 
+    // 配置 syscall 指令 (IA32_STAR, IA32_LSTAR, IA32_SF_MASK, IA32_EFER)
+    {
+        uint64_t star, lstar, sfmask, efer;
+        uint32_t eax, edx;
+
+        /* 1. 启用 IA32_EFER.SCE (System Call Enable) */
+        asm volatile("rdmsr" : "=a"(eax), "=d"(edx) : "c"(0xC0000080));
+        efer = ((uint64_t)edx << 32) | eax;
+        efer |= 1;  /* bit 0 = SCE */
+        eax = (uint32_t)efer;
+        edx = (uint32_t)(efer >> 32);
+        asm volatile("wrmsr" : : "c"(0xC0000080), "a"(eax), "d"(edx));
+
+        /* 2. IA32_STAR[47:32] = SEL_KCODE (0x08) → SYSCALL CS, SS = 0x10
+         *    IA32_STAR[63:48] = 0x13 → SYSRET CS = 0x13+16 = 0x23 (SEL_UCODE)
+         *                              SYSRET SS = 0x13+8  = 0x1B (SEL_UDATA) */
+        star = (0x13ULL << 48) | ((uint64_t)SEL_KCODE << 32);
+        eax = (uint32_t)star;
+        edx = (uint32_t)(star >> 32);
+        asm volatile("wrmsr" : : "c"(0xC0000081), "a"(eax), "d"(edx));
+
+        /* 3. IA32_LSTAR = syscall entry point */
+        lstar = (uint64_t)syscall_entry;
+        eax = (uint32_t)lstar;
+        edx = (uint32_t)(lstar >> 32);
+        asm volatile("wrmsr" : : "c"(0xC0000082), "a"(eax), "d"(edx));
+
+        /* 4. IA32_SF_MASK = 0 (don't mask any RFLAGS bits) */
+        sfmask = 0;
+        eax = (uint32_t)sfmask;
+        edx = (uint32_t)(sfmask >> 32);
+        asm volatile("wrmsr" : : "c"(0xC0000084), "a"(eax), "d"(edx));
+
+        kinfo("SYSCALL", "MSR syscall configured (EFER.SCE=1 STAR=0x%lx LSTAR=0x%lx)", star, lstar);
+    }
+    boot_splash_log("SYSCALL MSR configured", 0x88FF88);
+    boot_splash_set_progress(17);
+    boot_splash_present();
+
     // pic加载
     kinfo("PIC", "Remapping PIC: IRQs at 0x20-0x2F");
     pic_remap(32, 40);
@@ -247,44 +287,25 @@ kmain(void* params) {
     g_klog_screen = false;
     wm_init(screen_width, screen_height);
     ui_init();
+    wm_desktop_init();
     boot_splash_log("Window manager initialized", 0x88FF88);
     boot_splash_set_progress(100);
     boot_splash_present();
     screen_width = kernel_params.framebuffer_width;
     screen_height = kernel_params.framebuffer_height;
 
-    // 初始化终端
+    // 初始化终端模块
     kinfo("TERM", "Initializing terminal module");
     terminal_init();
 
-    // 初始化终端窗口
-    kinfo("TERM", "Creating Terminal window");
-    terminal_create_window(50, 50, 1200, 700);
-    serial_puts("TERM: Font status: ");
-    serial_puts(g_font ? "Loaded" : "Not available");
-    serial_puts("\n");
-    wm_window_t* term_win = terminal_get_window();
-    if (term_win) {
-        serial_puts("TERM: Window created at ");
-        serial_putdec32(term_win->x);
-        serial_puts(",");
-        serial_putdec32(term_win->y);
-        serial_puts(" size ");
-        serial_putdec32(term_win->width);
-        serial_puts("x");
-        serial_putdec32(term_win->height);
-        serial_puts("\n");
-        shell_init();
-        shell_set_output(terminal_output);
-        shell_print_prompt();
+    // 初始化 shell（无默认终端窗口，点击桌面按钮后创建）
+    kinfo("TERM", "Initializing shell");
+    shell_init();
+    shell_set_output(terminal_output);
+    g_elf_on_exit = shell_print_prompt;
 
-        /* 注册 elf 退出回调，让用户程序结束后恢复 shell 提示符 */
-        g_elf_on_exit = shell_print_prompt;
-        wm_redraw();
-        graphics_present();
-    } else {
-        kerror("TERM", "Failed to create terminal window");
-    }
+    wm_redraw();
+    graphics_present();
 
     // 初始化 TSS（供后续 elfexec 使用）
     tss_init();

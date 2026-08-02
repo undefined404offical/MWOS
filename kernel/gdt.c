@@ -46,8 +46,8 @@ void gdt_init(void)
     gdt_set_entry(0, 0, 0, 0, 0);                // null
     gdt_set_entry(GDT_KCODE, 0, 0, 0x9A, 0xA0); // kernel code 64-bit
     gdt_set_entry(GDT_KDATA, 0, 0, 0x92, 0x00); // kernel data
-    gdt_set_entry(GDT_UCODE, 0, 0, 0xFA, 0xA0); // user code 64-bit
-    gdt_set_entry(GDT_UDATA, 0, 0, 0xF2, 0x00); // user data
+    gdt_set_entry(GDT_UCODE, 0, 0, 0xFA, 0xA0); // user code 64-bit (at index 4)
+    gdt_set_entry(GDT_UDATA, 0, 0, 0xF2, 0x00); // user data (at index 3)
 
     // TSS descriptor (gdt[5..6])
     gdt_set_tss(GDT_TSS, (uint64_t)&tss_entry, sizeof(struct tss) - 1);

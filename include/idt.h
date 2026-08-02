@@ -5,6 +5,17 @@
 #include "trap.h"
 
 void handle_syscall(Trapframe *tf);
+
+/* syscall 指令入口（在 interrupt_stub.asm 中） */
+extern void syscall_entry(void);
+
+/* syscall 内核栈和用户 RSP 保存区（在 syscall.c 中） */
+extern uint64_t g_syscall_kernel_stack;
+extern uint64_t g_saved_user_rsp;
+
+/* 用户程序退出标志 – 在 syscall_entry 汇编中检查（在 syscall.c 中） */
+extern int g_exit_program;
+
 // ----------------- trap常量 -----------------
 
 #define T_DIVIDE     0

@@ -1,34 +1,63 @@
-# MWOS 用户程序构建规则
-#
-# 用法: make [all|clean] PROGRAMS_BUILDDIR=path
-#
-# 输出: $(PROGRAMS_BUILDDIR)/programs/ 目录下的 .elf 文件
+# ============================
+# User Programs Build
+# ============================
 
-PROGRAMS_BUILDDIR ?= ../build
 CC = clang
-CFLAGS = -target x86_64-linux-gnu -ffreestanding -fno-builtin \
-         -fno-stack-protector -mno-red-zone -Wall -Wextra -O2 -g \
-         -I. -I../include -Wno-unused-parameter -Wno-unused-variable
-LD = ld.lld
-LDFLAGS = -nostdlib -T user.ld
+AS = nasm
+LD = lld-link
 
-PROGRAMSDIR = .
-BUILDIR = $(PROGRAMS_BUILDDIR)/programs
-ELFS = $(BUILDIR)/hello.elf
+# Output directory (from main Makefile)
+PROGRAMS_OUTPUT_DIR ?= $(PROGRAMS_BUILDDIR)/programs
+
+# Program sources (assembly)
+ASM_SRCS := $(wildcard *.asm)
+
+# Output ELF targets
+ASM_ELF_TARGETS := $(patsubst %.asm, $(PROGRAMS_OUTPUT_DIR)/%.elf, $(ASM_SRCS))
+
+# syscall_nr.h 路径
+SYSCALL_NR_H := $(abspath $(dir $(firstword $(MAKEFILE_LIST)))/../include/syscall_nr.h)
+
+# musl 路径
+MUSL_DIR := $(abspath $(dir $(firstword $(MAKEFILE_LIST)))/musl)
+MUSL_LIB := $(MUSL_DIR)/lib
+MUSL_INC := $(MUSL_DIR)/include $(MUSL_DIR)/obj/include $(MUSL_DIR)/arch/x86_64 $(MUSL_DIR)/arch/generic
+
+# C 程序源文件
+C_SRCS := $(wildcard *.c)
+C_ELF_TARGETS := $(patsubst %.c, $(PROGRAMS_OUTPUT_DIR)/%.elf, $(C_SRCS))
 
 .PHONY: all clean
 
-all: $(ELFS)
+all: $(PROGRAMS_OUTPUT_DIR) $(ASM_ELF_TARGETS) $(C_ELF_TARGETS)
 
-$(BUILDIR):
-	mkdir -p $(BUILDIR)
+$(PROGRAMS_OUTPUT_DIR):
+	mkdir -p $(PROGRAMS_OUTPUT_DIR)
 
-$(BUILDIR)/hello.o: $(PROGRAMSDIR)/hello.c | $(BUILDIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+# 汇编程序构建规则
+$(PROGRAMS_OUTPUT_DIR)/%.elf: %.asm $(SYSCALL_NR_H)
+	$(Q)echo "  ASM         $@"
+	$(Q)$(AS) -f elf64 -o $(PROGRAMS_OUTPUT_DIR)/$*.o $<
+	$(Q)echo "  LD          $@"
+	$(Q)ld.lld -nostdlib -o $@ \
+		-Ttext=0x400000 \
+		--entry=_start \
+		$(PROGRAMS_OUTPUT_DIR)/$*.o
 
-$(BUILDIR)/hello.elf: $(BUILDIR)/hello.o
-	$(LD) $(LDFLAGS) -o $@ $^
-	@echo "  PROGRAM    $@"
+# C 程序构建规则 (musl 链接)
+$(PROGRAMS_OUTPUT_DIR)/hello.elf: hello.c $(MUSL_LIB)/libc.a $(MUSL_LIB)/crt1.o
+	$(Q)echo "  CC          programs/$<"
+	$(Q)$(CC) -target x86_64-linux-gnu -ffreestanding -nostdinc \
+		$(addprefix -I, $(MUSL_INC)) \
+		-I$(abspath $(dir $(firstword $(MAKEFILE_LIST)))/../include) \
+		-c -o $(PROGRAMS_OUTPUT_DIR)/hello.o $<
+	$(Q)echo "  LD          $@"
+	$(Q)ld.lld -nostdlib -o $@ \
+		-Ttext=0x400000 \
+		--entry=_start \
+		$(MUSL_LIB)/crt1.o \
+		$(PROGRAMS_OUTPUT_DIR)/hello.o \
+		-L$(MUSL_LIB) -lc
 
 clean:
-	rm -rf $(BUILDIR)
+	rm -rf $(PROGRAMS_OUTPUT_DIR) 2>/dev/null || true

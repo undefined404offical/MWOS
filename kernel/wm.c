@@ -2,7 +2,9 @@
 #include "graphics.h"
 #include "memory.h"
 #include "serial.h"
+#include "shell.h"
 #include "string.h"
+#include "terminal.h"
 #include "ttf.h"
 
 extern boot_params_t* g_framebuffer;
@@ -36,15 +38,6 @@ static int g_xor_last_x = 0;
 static int g_xor_last_y = 0;
 static int g_xor_last_w = 0;
 static int g_xor_last_h = 0;
-
-// 任务栏按钮
-typedef struct {
-    wm_window_t* win;
-    int x, y, w, h;
-} taskbar_button_t;
-
-static taskbar_button_t g_taskbar[32];
-static int g_taskbar_count = 0;
 
 // dirty rect queue
 #define WM_DIRTY_QUEUE_CAPACITY 8
@@ -237,37 +230,7 @@ void wm_invalidate_window(wm_window_t* win) {
 }
 
 // ------------------------------------------------
-// 辅助：任务栏按钮
-// ------------------------------------------------
-
-static void taskbar_add_button(wm_window_t* win) {
-    // 已存在则不重复添加
-    for (int i = 0; i < g_taskbar_count; i++) {
-        if (g_taskbar[i].win == win) {
-            return;
-        }
-    }
-    if (g_taskbar_count >= 32)
-        return;
-
-    int index = g_taskbar_count++;
-    taskbar_button_t* b = &g_taskbar[index];
-    b->win = win;
-    b->w = 120;
-    b->h = 24;
-    b->x = 4 + index * 124;
-    b->y = g_screen_h - 26;
-}
-
-static void taskbar_update_positions(void) {
-    for (int i = 0; i < g_taskbar_count; i++) {
-        g_taskbar[i].x = 4 + i * 124;
-        g_taskbar[i].y = g_screen_h - 26;
-    }
-}
-
-// ------------------------------------------------
-// 标题栏按钮布局
+// 辅助：标题栏按钮布局
 // ------------------------------------------------
 
 static void wm_update_titlebar_buttons(wm_window_t* win) {
@@ -297,8 +260,9 @@ void wm_init(int screen_w, int screen_h) {
     g_window_list = NULL;
     g_next_window_id = 1;
     g_dragging_window = NULL;
-    g_taskbar_count = 0;
     wm_dirty_reset();
+
+    g_incremental_render_enabled = true;
 
     serial_puts("WM: init OK\n");
     bool* klog_to_screen = false;
@@ -445,8 +409,6 @@ wm_window_t* wm_create_window(int x, int y, int w, int h, const char* title,
         }
     }
 
-    taskbar_add_button(win);
-
     if (win->draw) {
         win->draw(win);
     }
@@ -504,22 +466,6 @@ void wm_close_window(wm_window_t* win) {
             cur = cur->next;
         if (cur)
             cur->next = win->next;
-    }
-
-    // 从任务栏删除
-    for (int i = 0; i < g_taskbar_count; i++) {
-        if (g_taskbar[i].win == win) {
-            // 标记任务栏按钮区域为无效
-            wm_invalidate_rect(g_taskbar[i].x, g_taskbar[i].y, g_taskbar[i].w,
-                               g_taskbar[i].h);
-
-            for (int j = i; j < g_taskbar_count - 1; j++) {
-                g_taskbar[j] = g_taskbar[j + 1];
-            }
-            g_taskbar_count--;
-            taskbar_update_positions();
-            break;
-        }
     }
 
     // 失效区域
@@ -1239,7 +1185,7 @@ void wm_redraw_dirty(void) {
             for (int x = x1; x < x2; x++) {
                 if (x < 0 || x >= sw)
                     continue;
-                row[x] = 0xFF169DE2;
+                row[x] = 0xFF009DFF;
             }
         }
 
@@ -1272,43 +1218,6 @@ void wm_redraw_dirty(void) {
                 coverage_set_rect(wx1, wy1, wx2, wy2);
             } else {
                 wm_draw_window_clipped_to(bb, bb_p, win, x1, y1, x2, y2);
-            }
-        }
-
-        for (int x = x1; x < x2; x++) {
-            for (int y = g_screen_h - 28; y < g_screen_h; y++) {
-                if (y < y1 || y >= y2)
-                    continue;
-                if (x < 0 || x >= sw || y < 0 || y >= sh)
-                    continue;
-                bb[y * bb_p + x] = 0xFF303030;
-            }
-        }
-
-        for (int i = 0; i < g_taskbar_count; i++) {
-            taskbar_button_t* b = &g_taskbar[i];
-            for (int yy = 0; yy < b->h; yy++) {
-                int sy = b->y + yy;
-                if (sy < y1 || sy >= y2)
-                    continue;
-                if (sy < 0 || sy >= sh)
-                    continue;
-                for (int xx = 0; xx < b->w; xx++) {
-                    int sx = b->x + xx;
-                    if (sx < x1 || sx >= x2)
-                        continue;
-                    if (sx < 0 || sx >= sw)
-                        continue;
-                    bb[sy * bb_p + sx] = 0xFF505050;
-                }
-            }
-            if (g_font) {
-                int tx = b->x + 6;
-                int ty = b->y + 19;
-                if (tx < x2 && tx >= x1 && ty < y2 && ty >= y1) {
-                    ttf_draw_text_utf8(g_font, tx, ty, 18, 0xFFFFFFFF,
-                                       b->win->title);
-                }
             }
         }
 
@@ -1395,26 +1304,7 @@ bool wm_handle_mouse(int x, int y, bool left_down) {
 
     // 1. 鼠标刚按下
     if (left_down && !prev_left_down) {
-        // 1.1 先检查任务栏按钮
-        for (int i = 0; i < g_taskbar_count; i++) {
-            taskbar_button_t* b = &g_taskbar[i];
-            if (x >= b->x && x < b->x + b->w && y >= b->y && y < b->y + b->h) {
-
-                b->win->visible = true;
-                b->win->minimized = false;
-
-                // 点击任务栏按钮 → 移到同层最前
-                wm_bring_to_front(b->win);
-
-                wm_invalidate_window(b->win);
-                wm_redraw_dirty();
-
-                prev_left_down = left_down;
-                return false;
-            }
-        }
-
-        // 1.2 检查是否点到窗口
+        // 检查是否点到窗口
         wm_window_t* hit = wm_pick_window_at(x, y);
         if (hit) {
             int lx = x - hit->x;
@@ -1430,7 +1320,6 @@ bool wm_handle_mouse(int x, int y, bool left_down) {
 
                 hit->visible = false;
                 hit->minimized = true;
-                taskbar_add_button(hit);
 
                 wm_invalidate_window(hit);
                 wm_redraw_dirty();
@@ -1617,4 +1506,126 @@ bool wm_handle_mouse(int x, int y, bool left_down) {
     prev_left_down = left_down;
 
     return window_moved;
+}
+
+// ============================================================
+// 桌面窗口
+// ============================================================
+
+wm_window_t* g_desktop_window = NULL;
+#define DESKTOP_BTN_SIZE 48
+#define DESKTOP_BTN_X    24
+#define DESKTOP_BTN_Y    24
+
+static void desktop_draw(wm_window_t* win) {
+    if (!win || !win->buffer)
+        return;
+
+    uint32_t bg = 0xFF009DFF;
+    uint32_t btn = 0xFFB6B6B6;
+
+    int bw = win->buf_width;
+    int bh = win->buf_height;
+
+    // 填充背景色 #009dff
+    for (int y = 0; y < bh; y++) {
+        uint32_t* row = &win->buffer[y * bw];
+        for (int x = 0; x < bw; x++) {
+            row[x] = bg;
+        }
+    }
+
+    // 绘制 #b6b6b6 方形按钮
+    for (int y = 0; y < DESKTOP_BTN_SIZE; y++) {
+        int sy = DESKTOP_BTN_Y + y;
+        if (sy >= bh) break;
+        uint32_t* row = &win->buffer[sy * bw];
+        for (int x = 0; x < DESKTOP_BTN_SIZE; x++) {
+            int sx = DESKTOP_BTN_X + x;
+            if (sx >= bw) break;
+            row[sx] = btn;
+        }
+    }
+
+    // 按钮边框（深色）
+    uint32_t border = 0xFF888888;
+    for (int x = 0; x < DESKTOP_BTN_SIZE; x++) {
+        int sx = DESKTOP_BTN_X + x;
+        if (sx < bw) {
+            if (DESKTOP_BTN_Y < bh)
+                win->buffer[DESKTOP_BTN_Y * bw + sx] = border;
+            int by = DESKTOP_BTN_Y + DESKTOP_BTN_SIZE - 1;
+            if (by < bh)
+                win->buffer[by * bw + sx] = border;
+        }
+    }
+    for (int y = 0; y < DESKTOP_BTN_SIZE; y++) {
+        int sy = DESKTOP_BTN_Y + y;
+        if (sy < bh) {
+            if (DESKTOP_BTN_X < bw)
+                win->buffer[sy * bw + DESKTOP_BTN_X] = border;
+            int bx = DESKTOP_BTN_X + DESKTOP_BTN_SIZE - 1;
+            if (bx < bw)
+                win->buffer[sy * bw + bx] = border;
+        }
+    }
+
+    // 按钮上的文字 ">_" （终端图标）
+    if (g_font) {
+        ttf_draw_text_utf8_buf(g_font,
+                               DESKTOP_BTN_X + 10,
+                               DESKTOP_BTN_Y + 34,
+                               20, 0xFF000000,
+                               win->buffer, bw, bh, ">_");
+    }
+}
+
+static int g_desktop_btn_pressed = 0;
+
+static void desktop_mouse_handler(wm_window_t* win, int lx, int ly,
+                                    int button) {
+    (void)win;
+    if (!button)
+        return;
+
+    // 检查是否点击了按钮区域
+    if (lx >= DESKTOP_BTN_X && lx < DESKTOP_BTN_X + DESKTOP_BTN_SIZE &&
+        ly >= DESKTOP_BTN_Y && ly < DESKTOP_BTN_Y + DESKTOP_BTN_SIZE) {
+
+        if (g_desktop_btn_pressed)
+            return;
+        g_desktop_btn_pressed = 1;
+
+        // 创建一个新的终端窗口，位置随机偏移避免完全重叠
+        static int term_offset = 0;
+        int tx = 50 + term_offset;
+        int ty = 50 + term_offset;
+        term_offset = (term_offset + 30) % 200;
+
+        terminal_t* term = terminal_create_window(tx, ty, 800, 500);
+        if (term) {
+            shell_print_prompt();
+            wm_bring_to_front(term->window);
+        }
+    } else {
+        g_desktop_btn_pressed = 0;
+    }
+}
+
+void wm_desktop_init(void) {
+    int w = g_screen_w;
+    int h = g_screen_h;
+
+    g_desktop_window = wm_create_window(0, 0, w, h, "",
+                                         desktop_draw,
+                                         desktop_mouse_handler);
+    if (g_desktop_window) {
+        g_desktop_window->title_height = 0;
+        g_desktop_window->layer = 0;
+        wm_lock_window_layer(g_desktop_window, true);
+        wm_invalidate_window(g_desktop_window);
+        serial_puts("WM: desktop window created\n");
+    } else {
+        serial_puts("WM: FAILED to create desktop window\n");
+    }
 }

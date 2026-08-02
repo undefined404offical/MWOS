@@ -28,8 +28,11 @@ typedef struct {
     bool initialized;
 } terminal_t;
 
+extern terminal_t* g_active_terminal;
+
 void terminal_init(void);
-void terminal_create_window(int x, int y, int width, int height);
+terminal_t* terminal_create_window(int x, int y, int width, int height);
+void terminal_set_active(terminal_t* term);
 void terminal_output(const char* str);
 void terminal_clear(void);
 void terminal_refresh(void);
